@@ -1,0 +1,3414 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GateLink - Meine Leads</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        html {
+            overflow-y: scroll;
+        }
+        body {
+            background-color: #fbfbfd;
+            color: #1d1d1f;
+        }
+        .transition-smooth {
+            transition: all 0.2s ease-out;
+        }
+        
+        /* Apple-Style Chat Animationen */
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateY(4px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+        
+        /* Sanftes Scrollen */
+        #chat-messages {
+            scroll-behavior: smooth;
+        }
+        
+        /* Custom Scrollbar (optional, sehr dezent) */
+        #chat-messages::-webkit-scrollbar {
+            width: 6px;
+        }
+        
+        #chat-messages::-webkit-scrollbar-track {
+            background: transparent;
+        }
+        
+        #chat-messages::-webkit-scrollbar-thumb {
+            background: rgba(0,0,0,0.1);
+            border-radius: 3px;
+        }
+        
+        #chat-messages::-webkit-scrollbar-thumb:hover {
+            background: rgba(0,0,0,0.15);
+        }
+        
+        /* Input Focus State */
+        #chat-input:focus {
+            outline: none;
+        }
+        
+        /* Button Hover (sanft) */
+        button[type="submit"]:hover {
+            transform: scale(1.05);
+        }
+        
+        button[type="submit"]:active {
+            transform: scale(0.98);
+        }
+        
+        /* View Toggle Styles */
+        .view-btn {
+            color: #86868b;
+            font-weight: 400;
+        }
+        .view-btn.active {
+            background-color: white;
+            color: #1d1d1f;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+            font-weight: 500;
+        }
+        button:active {
+            transform: scale(0.98);
+        }
+        
+        /* Kanban Styles */
+        .kanban-column {
+            min-height: 400px;
+            background-color: #f5f5f7;
+            border-radius: 12px;
+            padding: 16px;
+        }
+        .column-dropspot {
+            min-height: 300px;
+        }
+        .column-dropspot.drag-over {
+            background-color: #e8f4f8;
+            border-radius: 8px;
+        }
+        .kanban-card {
+            background: white;
+            border-radius: 8px;
+            padding: 12px;
+            margin-bottom: 12px;
+            cursor: grab;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            transition: all 0.2s;
+            user-select: none;
+        }
+        .kanban-card:active {
+            cursor: grabbing;
+        }
+        .kanban-card:hover {
+            box-shadow: 0 4px 8px rgba(0,0,0,0.15);
+            transform: translateY(-2px);
+        }
+        .kanban-card.dragging {
+            opacity: 0.5;
+            transform: rotate(2deg);
+            cursor: grabbing;
+        }
+        
+        /* Calendar Styles */
+        .calendar-day {
+            min-height: 100px;
+            border: 1px solid #e5e5e7;
+            padding: 8px;
+        }
+        .calendar-event {
+            background: #0071e3;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 4px;
+            margin-bottom: 4px;
+            font-size: 12px;
+            cursor: pointer;
+        }
+    </style>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            500: '#0071e3',
+                            600: '#0071e3',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <script>
+        const API_BASE = '/api/gatelink';
+
+        function getToken() {
+            return localStorage.getItem('gatelink_token');
+        }
+
+        function removeToken() {
+            localStorage.removeItem('gatelink_token');
+            localStorage.removeItem('gatelink_makler');
+            localStorage.removeItem('gatelink_user');
+        }
+
+        async function authFetch(url, options = {}) {
+            const token = getToken();
+            if (!token) {
+                window.location.href = '/gatelink';
+                return new Response(null, { status: 401 });
+            }
+
+            const headers = {
+                ...options.headers,
+                'Authorization': `Bearer ${token}`
+            };
+
+            if (!headers['Content-Type'] && !(options.body instanceof FormData)) {
+                headers['Content-Type'] = 'application/json';
+            }
+
+            try {
+                const response = await fetch(url, {
+                    ...options,
+                    headers
+                });
+
+                if (response.status === 401) {
+                    removeToken();
+                    window.location.href = '/gatelink';
+                    return response;
+                }
+
+                return response;
+            } catch (error) {
+                console.error('Netzwerk-Fehler:', error);
+                return new Response(null, { status: 500 });
+            }
+        }
+
+        function logout() {
+            removeToken();
+            window.location.href = '/gatelink';
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        let currentUser = null;
+        let allLeads = [];
+        let currentView = 'list'; // 'list', 'kanban', 'calendar', 'stats'
+
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Prüfe ob eingeloggt
+            const token = getToken();
+            if (!token) {
+                window.location.href = '/gatelink';
+                return;
+            }
+
+            // Lade User/Makler-Info
+            try {
+                const userData = localStorage.getItem('gatelink_user');
+                const maklerData = localStorage.getItem('gatelink_makler');
+                
+                if (userData) {
+                    currentUser = JSON.parse(userData);
+                    currentUser.type = 'user'; // Stelle sicher, dass type gesetzt ist
+                    const displayName = currentUser.username || currentUser.email;
+                    document.getElementById('makler-name').textContent = displayName;
+                    document.getElementById('header-description').textContent = 'Übersicht über alle qualifizierten Leads im System';
+                } else if (maklerData) {
+                    currentUser = JSON.parse(maklerData);
+                    // Stelle sicher, dass type gesetzt ist
+                    if (!currentUser.type) {
+                        currentUser.type = 'makler';
+                    }
+                    document.getElementById('makler-name').textContent = currentUser.firmenname || currentUser.email;
+                    document.getElementById('header-description').textContent = 'Übersicht über Ihre qualifizierten Leads';
+                } else {
+                    // Lade vom Server
+                    const response = await authFetch(`${API_BASE}/me`);
+                    if (response.ok) {
+                        currentUser = await response.json();
+                        if (currentUser.type === 'user') {
+                            localStorage.setItem('gatelink_user', JSON.stringify(currentUser));
+                            const displayName = currentUser.username || currentUser.email;
+                            document.getElementById('makler-name').textContent = displayName;
+                            document.getElementById('header-description').textContent = 'Übersicht über alle qualifizierten Leads im System';
+                        } else {
+                            // Stelle sicher, dass type gesetzt ist
+                            if (!currentUser.type) {
+                                currentUser.type = 'makler';
+                            }
+                            localStorage.setItem('gatelink_makler', JSON.stringify(currentUser));
+                            document.getElementById('makler-name').textContent = currentUser.firmenname || currentUser.email;
+                            document.getElementById('header-description').textContent = 'Übersicht über Ihre qualifizierten Leads';
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error('Fehler beim Laden der User-Info:', error);
+            }
+
+            // Initialisiere Jahr-Filter mit aktuellen und vergangenen Jahren
+            initializeJahrFilter();
+            
+            await loadLeads();
+            
+            // Lade Credits-Stand falls Makler Credits-System verwendet
+            console.log('CurrentUser:', currentUser);
+            if (currentUser && currentUser.type === 'makler') {
+                console.log('Makler erkannt, lade Credits...');
+                await checkAndLoadCredits();
+            } else {
+                console.log('Kein Makler oder type nicht makler:', currentUser?.type);
+            }
+            
+            // Stelle sicher, dass das LeadGate-Logo korrekt geladen wird
+            const logoImg = document.getElementById('gatelink-logo-img');
+            if (logoImg) {
+                const logoUrl = 'https://leadgate.info/wp-content/uploads/2025/11/cropped-ChatGPT-Image-12.-Nov.-2025-00_37_51-1.png';
+                // Entferne altes src und setze neu, um Cache zu umgehen
+                logoImg.src = '';
+                setTimeout(() => {
+                    logoImg.src = logoUrl;
+                }, 10);
+            }
+        });
+
+        async function loadLeads() {
+            try {
+                // Hole Filter-Werte
+                const jahr = document.getElementById('filter-jahr')?.value || '';
+                const monat = document.getElementById('filter-monat')?.value || '';
+                
+                // Baue URL mit Query-Parametern
+                let url = `${API_BASE}/leads`;
+                const params = [];
+                if (jahr) params.push(`jahr=${jahr}`);
+                if (monat) params.push(`monat=${monat}`);
+                if (params.length > 0) {
+                    url += '?' + params.join('&');
+                }
+                
+                const response = await authFetch(url);
+                
+                if (!response.ok) {
+                    if (response.status === 401) {
+                        window.location.href = '/gatelink';
+                        return;
+                    }
+                    const container = document.getElementById('leads-container');
+                    container.className = 'grid grid-cols-2 gap-6';
+                    container.innerHTML = `
+                        <div class="bg-white rounded-3xl border border-gray-200/50 p-16 text-center col-span-2" style="box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                            <p class="text-[#86868b] font-medium mb-1" style="font-weight: 500;">Fehler beim Laden der Leads</p>
+                        </div>
+                    `;
+                    return;
+                }
+                
+                allLeads = await response.json();
+                // Render based on current view
+                if (currentView === 'kanban') {
+                    renderKanban();
+                } else if (currentView === 'calendar') {
+                    renderCalendar();
+                } else if (currentView === 'stats') {
+                    renderStats();
+                } else {
+                    renderLeads();
+                }
+            } catch (error) {
+                console.error('Fehler beim Laden der Leads:', error);
+                const container = document.getElementById('leads-container');
+                container.className = 'grid grid-cols-2 gap-6';
+                container.innerHTML = `
+                    <div class="bg-white rounded-3xl border border-gray-200/50 p-16 text-center col-span-2" style="box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                        <p class="text-[#86868b] font-medium mb-1" style="font-weight: 500;">Fehler beim Laden</p>
+                        <p class="text-sm text-[#86868b]" style="font-weight: 400;">Bitte versuchen Sie es erneut</p>
+                    </div>
+                `;
+            }
+        }
+
+        // Makler-Status Optionen
+        const maklerStatusOptions = {
+            'in_gespraechen': { label: 'In Bearbeitung', color: 'bg-blue-100 text-blue-700' },
+            'erstkontakt': { label: 'Erstkontakt stattgefunden', color: 'bg-green-100 text-green-700' },
+            'nicht_funktioniert': { label: 'Nicht funktioniert', color: 'bg-red-100 text-red-700' },
+            'reklamation': { label: 'Reklamation', color: 'bg-orange-100 text-orange-700' },
+            'unter_vertrag': { label: 'Unter Maklervertrag', color: 'bg-purple-100 text-purple-700' },
+            'verkauft': { label: 'Immobilie verkauft', color: 'bg-yellow-100 text-yellow-700' }
+        };
+
+        function getMaklerStatusBadge(lead) {
+            // FlexRecall-Badge hat Priorität (nur wenn noch kein Checklisten-Item aktiv ist)
+            if (lead.status === 'flexrecall') {
+                // Prüfe ob Checklisten-Items aktiv sind - wenn ja, zeige diese statt FlexRecall
+                const checklistStatus = getChecklistStatusLabel(lead);
+                if (checklistStatus) {
+                    // Checkliste wurde bearbeitet - zeige normalen Status
+                    if (lead.makler_status === 'in_gespraechen') {
+                        return `<span class="px-2 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-700">${escapeHtml(checklistStatus)}</span>`;
+                    }
+                } else {
+                    // Noch kein Checklisten-Item aktiv - zeige FlexRecall
+                    return '<span class="px-2 py-1 text-xs font-medium rounded-full bg-purple-600 text-white">FlexRecall</span>';
+                }
+            }
+            
+            if (!lead.makler_status) {
+                return '<span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-700">Unkontaktiert</span>';
+            }
+            
+            // Wenn Status "in_gespraechen" ist, zeige Checklisten-Status
+            if (lead.makler_status === 'in_gespraechen') {
+                const checklistStatus = getChecklistStatusLabel(lead);
+                if (checklistStatus) {
+                    return `<span class="px-2 py-1 text-xs font-medium rounded-full bg-blue-100 text-blue-700">${escapeHtml(checklistStatus)}</span>`;
+                }
+            }
+            
+            // Wenn "Immobilie verkauft" aktiviert ist, zeige "Immobilie verkauft"
+            if (lead.immobilie_verkauft === 1) {
+                return '<span class="px-2 py-1 text-xs font-medium rounded-full bg-yellow-100 text-yellow-700">Immobilie verkauft</span>';
+            }
+            
+            const status = maklerStatusOptions[lead.makler_status];
+            if (status) {
+                return `<span class="px-2 py-1 text-xs font-medium rounded-full ${status.color}">${status.label}</span>`;
+            }
+            return `<span class="px-2 py-1 text-xs font-medium rounded-full bg-gray-100 text-gray-700">${escapeHtml(lead.makler_status)}</span>`;
+        }
+
+        function initializeJahrFilter() {
+            const jahrInput = document.getElementById('filter-jahr');
+            if (!jahrInput) return;
+            
+            // Setze aktuelles Jahr als Standard-Wert
+            const aktuellesJahr = new Date().getFullYear();
+            jahrInput.value = aktuellesJahr;
+        }
+        
+        function toggleFilter() {
+            const panel = document.getElementById('filter-panel');
+            if (panel) {
+                panel.classList.toggle('hidden');
+            }
+        }
+
+        function getTimeAgo(dateStr) {
+            const date = new Date(dateStr);
+            const now = new Date();
+            const diffMs = now - date;
+            const diffMins = Math.floor(diffMs / 60000);
+            const diffHours = Math.floor(diffMs / 3600000);
+            const diffDays = Math.floor(diffMs / 86400000);
+            
+            if (diffMins < 60) {
+                return `vor ${diffMins} ${diffMins === 1 ? 'Min' : 'Min'}`;
+            } else if (diffHours < 24) {
+                return `vor ${diffHours} ${diffHours === 1 ? 'Std.' : 'Std.'}`;
+            } else if (diffDays < 7) {
+                return `vor ${diffDays} ${diffDays === 1 ? 'Tag' : 'Tagen'}`;
+            } else {
+                return date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit' });
+            }
+        }
+
+        function getStatusLabel(status, lead = null) {
+            if (!status) return 'Unkontaktiert';
+            
+            // Wenn Lead vorhanden ist und Status "in_gespraechen" ist, zeige Checklisten-Status
+            if (status === 'in_gespraechen' && lead) {
+                const checklistStatus = getChecklistStatusLabel(lead);
+                if (checklistStatus) {
+                    return checklistStatus;
+                }
+            }
+            
+            const labels = {
+                'in_gespraechen': 'In Bearbeitung',
+                'erstkontakt': 'Kontaktiert',
+                'verkauft': 'Erledigt',
+                'unter_vertrag': 'Erledigt',
+                'nicht_funktioniert': 'Erledigt',
+                'reklamation': 'Erledigt'
+            };
+            return labels[status] || status;
+        }
+
+        function getChecklistStatusLabel(lead) {
+            // Prüfe Checklisten-Items in Prioritätsreihenfolge
+            if (lead.immobilie_verkauft === 1) {
+                return 'Immobilie verkauft';
+            }
+            if (lead.maklervertrag_unterschrieben === 1) {
+                return 'Maklervertrag unterschrieben';
+            }
+            if (lead.zweit_termin_vereinbart === 1) {
+                return 'Zweittermin vereinbart';
+            }
+            if (lead.termin_vereinbart === 1) {
+                return 'Termin vereinbart';
+            }
+            if (lead.absage === 1) {
+                return 'Absage';
+            }
+            // Kein Checklisten-Item aktiviert
+            return null;
+        }
+        
+        function getTelefonKontaktLabel(ergebnis) {
+            const labels = {
+                'erreicht': 'Erreicht',
+                'nicht_erreicht': 'Nicht erreicht',
+                'rueckruf': 'Rückruf'
+            };
+            return labels[ergebnis] || '';
+        }
+
+        function getShortDescription(lead) {
+            // Erstelle eine kurze, lesbare Zusammenfassung
+            const parts = [];
+            if (lead.immobilien_typ) parts.push(lead.immobilien_typ);
+            if (lead.ort || lead.postleitzahl) parts.push([lead.postleitzahl, lead.ort].filter(Boolean).join(' '));
+            if (lead.preis) {
+                const preis = Number(lead.preis);
+                if (!isNaN(preis) && preis > 0) {
+                    parts.push(`${preis.toLocaleString('de-DE')} €`);
+                }
+            }
+            
+            if (parts.length > 0) {
+                return parts.join(' • ');
+            }
+            return lead.beschreibung ? lead.beschreibung.substring(0, 60) + (lead.beschreibung.length > 60 ? '...' : '') : 'Keine Details';
+        }
+
+        function renderLeads() {
+            // If not in list view, switch to it
+            if (currentView !== 'list') {
+                switchView('list');
+                return;
+            }
+            
+            const searchTerm = document.getElementById('search-leads')?.value.toLowerCase() || '';
+            
+            let filtered = allLeads;
+            
+            // FlexRecall-Leads herausfiltern, wenn Status "reklamiert" ist (nach Absage)
+            filtered = filtered.filter(l => l.status !== 'reklamiert');
+            
+            // Status-Filter (mehrere Checkboxen können aktiviert sein)
+            const activeFilters = [];
+            if (document.getElementById('filter-kein_status')?.checked) {
+                activeFilters.push('kein_status');
+            }
+            if (document.getElementById('filter-in_gespraechen')?.checked) {
+                activeFilters.push('in_gespraechen');
+            }
+            if (document.getElementById('filter-termin_vereinbart')?.checked) {
+                activeFilters.push('termin_vereinbart');
+            }
+            if (document.getElementById('filter-zweit_termin_vereinbart')?.checked) {
+                activeFilters.push('zweit_termin_vereinbart');
+            }
+            if (document.getElementById('filter-maklervertrag_unterschrieben')?.checked) {
+                activeFilters.push('maklervertrag_unterschrieben');
+            }
+            if (document.getElementById('filter-immobilie_verkauft')?.checked) {
+                activeFilters.push('immobilie_verkauft');
+            }
+            if (document.getElementById('filter-absage')?.checked) {
+                activeFilters.push('absage');
+            }
+            
+            // Wenn Filter aktiviert sind, filtern (OR-Logik: Lead muss mindestens einem Filter entsprechen)
+            if (activeFilters.length > 0) {
+                filtered = filtered.filter(l => {
+                    return activeFilters.some(filter => {
+                        if (filter === 'kein_status') {
+                            return !l.makler_status;
+                        } else if (filter === 'termin_vereinbart') {
+                            return l.termin_vereinbart === 1;
+                        } else if (filter === 'zweit_termin_vereinbart') {
+                            return l.zweit_termin_vereinbart === 1;
+                        } else if (filter === 'maklervertrag_unterschrieben') {
+                            return l.maklervertrag_unterschrieben === 1;
+                        } else if (filter === 'immobilie_verkauft') {
+                            return l.immobilie_verkauft === 1;
+                        } else if (filter === 'absage') {
+                            return l.absage === 1;
+                        } else if (filter === 'in_gespraechen') {
+                            // Zeige Leads mit Status "in_gespraechen" die KEINE Checklisten-Items aktiviert haben
+                            return l.makler_status === 'in_gespraechen' && 
+                                   !(l.termin_vereinbart === 1 || l.zweit_termin_vereinbart === 1 || 
+                                     l.maklervertrag_unterschrieben === 1 || l.immobilie_verkauft === 1 || l.absage === 1);
+                        }
+                        return false;
+                    });
+                });
+            }
+            
+            // Favoriten-Filter
+            if (document.getElementById('filter-favoriten')?.checked) {
+                filtered = filtered.filter(l => l.favorit === 1);
+            }
+            
+            // Suchfilter
+            if (searchTerm) {
+                filtered = filtered.filter(l => {
+                    const searchFields = [
+                        l.id.toString(),
+                        l.anbieter_name || '',
+                        l.postleitzahl || '',
+                        l.ort || '',
+                        l.telefonnummer || '',
+                        l.features || '',
+                        l.beschreibung || '',
+                        l.makler_beschreibung || '',
+                        l.status || '',
+                        l.makler_status || ''
+                    ];
+                    return searchFields.some(field => field.toLowerCase().includes(searchTerm));
+                });
+            }
+            
+            // Sortierung: Neue Leads (nicht angesehen) immer ganz oben, dann nach Datum
+            filtered.sort((a, b) => {
+                // Zuerst nach "angesehen" Status: nicht angesehen (0) kommt vor angesehen (1)
+                const aAngesehen = a.makler_angesehen || 0;
+                const bAngesehen = b.makler_angesehen || 0;
+                if (aAngesehen !== bAngesehen) {
+                    return aAngesehen - bAngesehen; // 0 (nicht angesehen) kommt vor 1 (angesehen)
+                }
+                // Wenn beide gleich angesehen sind, nach Datum (neueste zuerst)
+                return new Date(b.erstellt_am) - new Date(a.erstellt_am);
+            });
+
+            const container = document.getElementById('leads-container');
+            container.className = 'grid grid-cols-2 gap-6';
+            
+            if (filtered.length === 0) {
+                if (allLeads.length === 0) {
+                    const description = currentUser && currentUser.type === 'user' 
+                        ? 'Es sind noch keine qualifizierten Leads im System vorhanden'
+                        : 'Sie haben noch keine qualifizierten Leads zugewiesen bekommen';
+                    container.innerHTML = `
+                        <div class="bg-white rounded-3xl border border-gray-200/50 p-20 text-center col-span-2" style="box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                            <p class="text-[#86868b] font-medium mb-2" style="font-weight: 500;">Keine qualifizierten Leads vorhanden</p>
+                            <p class="text-sm text-[#86868b] mt-2" style="font-weight: 400;">${description}</p>
+                        </div>
+                    `;
+                } else {
+                    container.innerHTML = `
+                        <div class="bg-white rounded-3xl border border-gray-200/50 p-20 text-center col-span-2" style="box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                            <p class="text-[#86868b] font-medium mb-2" style="font-weight: 500;">Keine Ergebnisse</p>
+                            <p class="text-sm text-[#86868b] mt-2" style="font-weight: 400;">Versuchen Sie eine andere Suche</p>
+                        </div>
+                    `;
+                }
+                return;
+            }
+            
+            container.innerHTML = filtered.map(lead => {
+                const date = new Date(lead.erstellt_am);
+                const dateStr = date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                
+                const maklerStatusBadge = getMaklerStatusBadge(lead);
+                const isFlexRecall = lead.status === 'flexrecall';
+                const isNew = (lead.makler_angesehen || 0) === 0;
+                
+                // FlexRecall: Lila Hinterlegung (hat Priorität über orange für neue Leads)
+                let cardClasses = 'bg-white rounded-2xl border border-gray-200/60 p-5 hover:border-gray-300 hover:bg-gray-50/50 transition-smooth flex flex-col cursor-pointer';
+                if (isFlexRecall) {
+                    cardClasses = `bg-purple-50/80 border-purple-200/60 rounded-2xl p-5 hover:border-purple-300/80 hover:bg-purple-100/60 transition-smooth flex flex-col cursor-pointer ${isNew ? 'bg-purple-100/80' : ''}`;
+                } else if (isNew) {
+                    cardClasses += ' bg-orange-50 border-orange-300';
+                }
+                
+                return `
+                    <div class="${cardClasses}" onclick="openLeadDetail(${lead.id})">
+                        ${isFlexRecall ? '<div class="mb-2 px-3 py-1 bg-purple-600 text-white text-xs font-semibold rounded-full inline-block">FlexRecall</div>' : ''}
+                        <div class="flex-1">
+                            <div class="flex items-start justify-between mb-3">
+                                <div class="flex items-center gap-3">
+                                    <button onclick="event.stopPropagation(); toggleFavorite(${lead.id})" class="focus:outline-none">
+                                        <svg class="w-5 h-5 ${lead.favorit === 1 ? 'text-yellow-400 fill-current' : 'text-gray-300'}" fill="currentColor" viewBox="0 0 20 20">
+                                            <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+                                        </svg>
+                                    </button>
+                                    <span class="text-sm font-semibold text-[#1d1d1f]">Lead #${lead.lead_nummer || lead.id}</span>
+                                    ${maklerStatusBadge}
+                                </div>
+                                <button onclick="event.stopPropagation(); openLeadDetail(${lead.id})" class="text-[#0071e3] hover:text-[#0071e3]/80 text-sm font-medium">
+                                    Bearbeiten
+                                </button>
+                            </div>
+                            
+                            ${lead.anbieter_name ? `
+                            <div class="mb-2">
+                                <div class="text-sm font-medium text-[#1d1d1f]">👤 ${escapeHtml(lead.anbieter_name)}</div>
+                            </div>
+                            ` : ''}
+                            
+                            ${lead.ort || lead.postleitzahl ? `
+                            <div class="mb-2">
+                                <div class="text-sm font-medium text-[#1d1d1f]">📍 ${escapeHtml([lead.postleitzahl, lead.ort].filter(Boolean).join(' '))}</div>
+                            </div>
+                            ` : ''}
+                            
+                            ${(() => {
+                                if (lead.preis != null && lead.preis !== undefined && lead.preis !== '') {
+                                    const preisValue = Number(lead.preis);
+                                    if (!isNaN(preisValue) && preisValue > 0) {
+                                        return `<div class="mb-2"><div class="text-lg font-bold text-[#0071e3]">${preisValue.toLocaleString('de-DE', { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €</div></div>`;
+                                    }
+                                }
+                                return '';
+                            })()}
+                            
+                            ${lead.wohnflaeche || lead.grundstuecksflaeche ? `
+                            <div class="mb-2 text-xs text-[#6b7280]">
+                                ${lead.wohnflaeche ? `🏠 ${lead.wohnflaeche} m²` : ''}
+                                ${lead.wohnflaeche && lead.grundstuecksflaeche ? ' • ' : ''}
+                                ${lead.grundstuecksflaeche ? `🌳 ${lead.grundstuecksflaeche} m²` : ''}
+                            </div>
+                            ` : ''}
+                            
+                            ${lead.telefonnummer ? `
+                            <div class="mb-2 text-xs text-[#6b7280] font-mono">📞 ${escapeHtml(lead.telefonnummer)}</div>
+                            ` : ''}
+                            
+                            ${lead.features ? `
+                            <div class="mb-2 text-xs text-[#6b7280]">✨ ${escapeHtml(lead.features)}</div>
+                            ` : ''}
+                            
+                            ${lead.immobilien_typ ? `
+                            <div class="mb-2 text-xs text-[#6b7280]">🏠 ${escapeHtml(lead.immobilien_typ)}</div>
+                            ` : ''}
+                            
+                            ${lead.baujahr ? `
+                            <div class="mb-2 text-xs text-[#6b7280]">📅 Baujahr: ${lead.baujahr}</div>
+                            ` : ''}
+                            
+                            ${lead.lage ? `
+                            <div class="mb-2 text-xs text-[#6b7280]">📍 ${escapeHtml(lead.lage)}</div>
+                            ` : ''}
+                            
+                            ${lead.kontakt_datum || lead.kontakt_zeitraum ? `
+                            <div class="mb-2 text-xs text-gray-500">
+                                📅 ${lead.kontakt_datum ? new Date(lead.kontakt_datum + 'T00:00:00').toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : ''}
+                                ${lead.kontakt_datum && lead.kontakt_zeitraum ? ' • ' : ''}
+                                ${lead.kontakt_zeitraum ? escapeHtml(lead.kontakt_zeitraum) : ''}
+                            </div>
+                            ` : ''}
+                            
+                            <div class="mb-2 text-xs text-gray-400">📆 ${dateStr}</div>
+                        </div>
+                        
+                        ${lead.beschreibung ? `
+                        <div class="mt-2 pt-2 border-t border-gray-100">
+                            <div class="text-xs text-gray-500 mb-1">📝 Beschreibung (vom Telefonisten)</div>
+                            <div class="text-xs text-[#1d1d1f] whitespace-pre-wrap line-clamp-4" style="word-wrap: break-word; overflow-wrap: break-word;">${escapeHtml(lead.beschreibung)}</div>
+                        </div>
+                        ` : ''}
+                        
+                        ${lead.makler_beschreibung ? `
+                        <div class="mt-2 pt-2 border-t border-gray-100">
+                            <div class="text-xs text-gray-500 mb-1">✏️ Ihre Notizen</div>
+                            <div class="text-xs text-[#1d1d1f] whitespace-pre-wrap line-clamp-3" style="word-wrap: break-word; overflow-wrap: break-word;">${escapeHtml(lead.makler_beschreibung)}</div>
+                        </div>
+                        ` : ''}
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function switchView(view) {
+            currentView = view;
+            // Update active button
+            document.querySelectorAll('.view-btn').forEach(btn => btn.classList.remove('active'));
+            document.getElementById(`view-${view}`).classList.add('active');
+            
+            // Update title
+            const titles = {
+                'list': 'Neue Anfragen',
+                'kanban': 'Kanban Board',
+                'calendar': 'Kalender',
+                'stats': 'Statistik'
+            };
+            document.getElementById('main-title').textContent = titles[view] || 'Neue Anfragen';
+            
+            // Render appropriate view
+            if (view === 'kanban') {
+                renderKanban();
+            } else if (view === 'calendar') {
+                renderCalendar();
+            } else if (view === 'stats') {
+                renderStats();
+            } else {
+                renderLeads();
+            }
+        }
+
+        async function applyFilters() {
+            // Lade Leads neu, wenn Jahr/Monat-Filter gesetzt sind (serverseitige Filter)
+            const jahr = document.getElementById('filter-jahr')?.value || '';
+            const monat = document.getElementById('filter-monat')?.value || '';
+            
+            if (jahr || monat) {
+                // Serverseitige Filter: Lade Leads neu
+                await loadLeads();
+            } else {
+                // Clientseitige Filter: Re-render current view
+                if (currentView === 'kanban') {
+                    renderKanban();
+                } else if (currentView === 'calendar') {
+                    renderCalendar();
+                } else if (currentView === 'stats') {
+                    renderStats();
+                } else {
+                    renderLeads();
+                }
+            }
+        }
+
+        function getAnfrageTyp(lead) {
+            if (lead.immobilien_typ) return lead.immobilien_typ;
+            return 'Anfrage';
+        }
+
+        async function toggleFavorite(leadId) {
+            try {
+                const lead = allLeads.find(l => l.id === leadId);
+                if (!lead) return;
+                
+                const newFavoriteValue = lead.favorit === 1 ? 0 : 1;
+                const response = await authFetch(`${API_BASE}/leads/${leadId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ favorit: newFavoriteValue })
+                });
+                
+                if (response.ok) {
+                    const updatedLead = await response.json();
+                    const index = allLeads.findIndex(l => l.id === leadId);
+                    if (index !== -1) allLeads[index] = updatedLead;
+                    
+                    // Re-render current view
+                    if (currentView === 'kanban') {
+                        renderKanban();
+                    } else if (currentView === 'calendar') {
+                        renderCalendar();
+                    } else if (currentView === 'stats') {
+                        renderStats();
+                    } else {
+                        renderLeads();
+                    }
+                }
+            } catch (error) {
+                console.error('Fehler beim Aktualisieren des Favoriten:', error);
+            }
+        }
+
+        function renderKanban() {
+            const container = document.getElementById('leads-container');
+            const searchTerm = document.getElementById('search-leads')?.value.toLowerCase() || '';
+            
+            // Filter leads (same logic as renderLeads)
+            let filtered = allLeads;
+            
+            // Status-Filter (mehrere Checkboxen können aktiviert sein)
+            const activeFilters = [];
+            if (document.getElementById('filter-kein_status')?.checked) {
+                activeFilters.push('kein_status');
+            }
+            if (document.getElementById('filter-in_gespraechen')?.checked) {
+                activeFilters.push('in_gespraechen');
+            }
+            if (document.getElementById('filter-termin_vereinbart')?.checked) {
+                activeFilters.push('termin_vereinbart');
+            }
+            if (document.getElementById('filter-zweit_termin_vereinbart')?.checked) {
+                activeFilters.push('zweit_termin_vereinbart');
+            }
+            if (document.getElementById('filter-maklervertrag_unterschrieben')?.checked) {
+                activeFilters.push('maklervertrag_unterschrieben');
+            }
+            if (document.getElementById('filter-immobilie_verkauft')?.checked) {
+                activeFilters.push('immobilie_verkauft');
+            }
+            if (document.getElementById('filter-absage')?.checked) {
+                activeFilters.push('absage');
+            }
+            
+            // Wenn Filter aktiviert sind, filtern (OR-Logik)
+            if (activeFilters.length > 0) {
+                filtered = filtered.filter(l => {
+                    return activeFilters.some(filter => {
+                        if (filter === 'kein_status') {
+                            return !l.makler_status;
+                        } else if (filter === 'termin_vereinbart') {
+                            return l.termin_vereinbart === 1;
+                        } else if (filter === 'zweit_termin_vereinbart') {
+                            return l.zweit_termin_vereinbart === 1;
+                        } else if (filter === 'maklervertrag_unterschrieben') {
+                            return l.maklervertrag_unterschrieben === 1;
+                        } else if (filter === 'immobilie_verkauft') {
+                            return l.immobilie_verkauft === 1;
+                        } else if (filter === 'absage') {
+                            return l.absage === 1;
+                        } else if (filter === 'in_gespraechen') {
+                            return l.makler_status === 'in_gespraechen' && 
+                                   !(l.termin_vereinbart === 1 || l.zweit_termin_vereinbart === 1 || 
+                                     l.maklervertrag_unterschrieben === 1 || l.immobilie_verkauft === 1 || l.absage === 1);
+                        }
+                        return false;
+                    });
+                });
+            }
+            
+            // FlexRecall-Leads herausfiltern, wenn Status "reklamiert" ist (nach Absage)
+            filtered = filtered.filter(l => l.status !== 'reklamiert');
+            
+            // Favoriten-Filter
+            if (document.getElementById('filter-favoriten')?.checked) {
+                filtered = filtered.filter(l => l.favorit === 1);
+            }
+            
+            // Suchfilter
+            if (searchTerm) {
+                filtered = filtered.filter(l => {
+                    const searchFields = [
+                        l.id.toString(),
+                        l.lead_nummer ? l.lead_nummer.toString() : '',
+                        l.anbieter_name || '',
+                        l.postleitzahl || '',
+                        l.ort || '',
+                        l.telefonnummer || '',
+                        l.features || '',
+                        l.beschreibung || ''
+                    ];
+                    return searchFields.some(field => field.toLowerCase().includes(searchTerm));
+                });
+            }
+            
+            // Group leads by status
+            const columns = [
+                { id: 'unkontaktiert', title: 'Unkontaktiert', leads: [] },
+                { id: 'in_bearbeitung', title: 'In Bearbeitung', leads: [] },
+                { id: 'termin', title: 'Termin vereinbart', leads: [] },
+                { id: 'zweittermin', title: 'Zweittermin', leads: [] },
+                { id: 'maklervertrag', title: 'Maklervertrag', leads: [] },
+                { id: 'verkauft', title: 'Verkauft', leads: [] }
+            ];
+            
+            filtered.forEach(lead => {
+                // FlexRecall-Leads werden nicht angezeigt, wenn Status "reklamiert" ist (nach Absage)
+                if (lead.status === 'reklamiert') {
+                    return; // Skip diesen Lead - er wird nicht angezeigt
+                }
+                
+                if (lead.immobilie_verkauft === 1) {
+                    columns[5].leads.push(lead);
+                } else if (lead.maklervertrag_unterschrieben === 1) {
+                    columns[4].leads.push(lead);
+                } else if (lead.zweit_termin_vereinbart === 1) {
+                    columns[3].leads.push(lead);
+                } else if (lead.termin_vereinbart === 1) {
+                    columns[2].leads.push(lead);
+                } else if (lead.makler_status === 'in_gespraechen' || (lead.makler_status && !lead.termin_vereinbart && !lead.zweit_termin_vereinbart && !lead.maklervertrag_unterschrieben && !lead.immobilie_verkauft)) {
+                    columns[1].leads.push(lead);
+                } else {
+                    columns[0].leads.push(lead);
+                }
+            });
+            
+            // Sortiere jede Spalte: Nicht angesehene Leads zuerst, dann nach Datum
+            columns.forEach(col => {
+                col.leads.sort((a, b) => {
+                    const aAngesehen = a.makler_angesehen || 0;
+                    const bAngesehen = b.makler_angesehen || 0;
+                    if (aAngesehen !== bAngesehen) {
+                        return aAngesehen - bAngesehen;
+                    }
+                    return new Date(b.erstellt_am) - new Date(a.erstellt_am);
+                });
+            });
+            
+            container.className = 'grid grid-cols-6 gap-4 overflow-x-auto';
+            container.innerHTML = columns.map(col => `
+                <div class="kanban-column">
+                    <div class="font-semibold text-[#1d1d1f] mb-4 text-center">${col.title} (${col.leads.length})</div>
+                    <div class="column-dropspot" data-column-id="${col.id}">
+                        ${col.leads.map(lead => renderKanbanCard(lead)).join('')}
+                    </div>
+                </div>
+            `).join('');
+            
+            // Initialize drag and drop
+            initDragAndDrop();
+        }
+
+        function renderKanbanCard(lead) {
+            const date = new Date(lead.erstellt_am);
+            const dateStr = date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+            const favoritIcon = lead.favorit === 1 ? 'text-yellow-400 fill-current' : 'text-gray-300';
+            const isNew = (lead.makler_angesehen || 0) === 0;
+            const isFlexRecall = lead.status === 'flexrecall';
+            
+            // FlexRecall: Lila Hinterlegung
+            let cardClasses = 'kanban-card';
+            let borderStyle = '';
+            if (isFlexRecall) {
+                cardClasses += ' bg-purple-50 border-purple-300';
+                borderStyle = 'border: 2px solid #a855f7;';
+            } else if (isNew) {
+                cardClasses += ' bg-orange-50 border-orange-300';
+                borderStyle = 'border: 2px solid #fb923c;';
+            }
+            
+            return `
+                <div class="${cardClasses}" draggable="true" data-lead-id="${lead.id}" style="cursor: grab; ${borderStyle}">
+                    ${isFlexRecall ? '<div class="mb-2 px-2 py-0.5 bg-purple-600 text-white text-xs font-semibold rounded-full inline-block">FlexRecall</div>' : ''}
+                    <div onclick="event.stopPropagation(); openLeadDetail(${lead.id})" style="cursor: pointer;">
+                        <div class="flex items-center justify-between mb-2">
+                            <div class="flex items-center gap-2">
+                                <button onclick="event.stopPropagation(); toggleFavorite(${lead.id})" class="focus:outline-none">
+                                    <svg class="w-4 h-4 ${favoritIcon}" fill="currentColor" viewBox="0 0 20 20">
+                                        <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+                                    </svg>
+                                </button>
+                                <span class="text-xs font-semibold text-[#1d1d1f]">#${lead.lead_nummer || lead.id}</span>
+                            </div>
+                        </div>
+                        ${lead.anbieter_name ? `<div class="text-sm font-medium text-[#1d1d1f] mb-1">${escapeHtml(lead.anbieter_name)}</div>` : ''}
+                        ${lead.ort ? `<div class="text-xs text-[#6b7280] mb-1">📍 ${escapeHtml(lead.ort)}</div>` : ''}
+                        ${lead.preis ? `<div class="text-sm font-bold text-[#0071e3] mb-1">${Number(lead.preis).toLocaleString('de-DE')} €</div>` : ''}
+                        <div class="text-xs text-gray-400 mt-2">${dateStr}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function initDragAndDrop() {
+            const cards = document.querySelectorAll('.kanban-card');
+            const columns = document.querySelectorAll('.column-dropspot');
+            
+            cards.forEach(card => {
+                let isDragging = false;
+                
+                card.addEventListener('mousedown', (e) => {
+                    // Warte kurz, um zu prüfen ob es ein Drag oder Click wird
+                    isDragging = false;
+                    setTimeout(() => {
+                        if (!isDragging) {
+                            isDragging = false;
+                        }
+                    }, 100);
+                });
+                
+                card.addEventListener('dragstart', (e) => {
+                    isDragging = true;
+                    e.dataTransfer.setData('text/plain', card.dataset.leadId);
+                    e.dataTransfer.effectAllowed = 'move';
+                    card.classList.add('dragging');
+                });
+                
+                card.addEventListener('dragend', (e) => {
+                    card.classList.remove('dragging');
+                    // Entferne drag-over Klasse von allen Spalten
+                    document.querySelectorAll('.column-dropspot').forEach(col => {
+                        col.classList.remove('drag-over');
+                    });
+                    isDragging = false;
+                });
+                
+                // Verhindere Modal-Öffnung beim Drag
+                card.addEventListener('click', (e) => {
+                    if (isDragging) {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        return false;
+                    }
+                }, true);
+            });
+            
+            columns.forEach(column => {
+                column.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    column.classList.add('drag-over');
+                });
+                
+                column.addEventListener('dragleave', (e) => {
+                    column.classList.remove('drag-over');
+                });
+                
+                column.addEventListener('dragenter', (e) => {
+                    e.preventDefault();
+                });
+                
+                column.addEventListener('drop', async (e) => {
+                    e.preventDefault();
+                    const leadId = parseInt(e.dataTransfer.getData('text/plain'));
+                    const newColumnId = column.dataset.columnId;
+                    const lead = allLeads.find(l => l.id === leadId);
+                    if (!lead) return;
+                    
+                    // Erstelle Update-Objekt basierend auf Ziel-Spalte
+                    // Hierarchie: Unkontaktiert < In Bearbeitung < Termin < Zweittermin < Maklervertrag < Verkauft
+                    let updateData = {};
+                    
+                    if (newColumnId === 'verkauft') {
+                        // Verkauft: Setze immobilie_verkauft = 1, Status = 'verkauft'
+                        // Andere Checklisten-Felder bleiben erhalten (können für Dokumentation bleiben)
+                        updateData = {
+                            immobilie_verkauft: 1,
+                            makler_status: 'verkauft'
+                        };
+                    } else if (newColumnId === 'maklervertrag') {
+                        // Maklervertrag: Setze maklervertrag_unterschrieben = 1
+                        // Termine bleiben erhalten, aber immobilie_verkauft wird zurückgesetzt
+                        updateData = {
+                            maklervertrag_unterschrieben: 1,
+                            immobilie_verkauft: 0,
+                            makler_status: 'in_gespraechen'
+                        };
+                    } else if (newColumnId === 'zweittermin') {
+                        // Zweittermin: Setze zweit_termin_vereinbart = 1
+                        // Erster Termin bleibt erhalten, aber höhere Felder werden zurückgesetzt
+                        updateData = {
+                            zweit_termin_vereinbart: 1,
+                            maklervertrag_unterschrieben: 0,
+                            immobilie_verkauft: 0,
+                            makler_status: 'in_gespraechen'
+                        };
+                        // Wenn noch kein erster Termin, setze auch diesen
+                        if (lead.termin_vereinbart !== 1) {
+                            updateData.termin_vereinbart = 1;
+                        }
+                    } else if (newColumnId === 'termin') {
+                        // Termin: Setze termin_vereinbart = 1
+                        // Höhere Felder werden zurückgesetzt
+                        updateData = {
+                            termin_vereinbart: 1,
+                            zweit_termin_vereinbart: 0,
+                            maklervertrag_unterschrieben: 0,
+                            immobilie_verkauft: 0,
+                            makler_status: 'in_gespraechen',
+                            // Lösche Zweittermin-Felder wenn vorhanden
+                            zweit_termin_ort: null,
+                            zweit_termin_datum: null,
+                            zweit_termin_uhrzeit: null,
+                            zweit_termin_notiz: null
+                        };
+                    } else if (newColumnId === 'in_bearbeitung') {
+                        // In Bearbeitung: Setze Status, aber alle Checklisten-Felder zurück
+                        updateData = {
+                            makler_status: 'in_gespraechen',
+                            termin_vereinbart: 0,
+                            zweit_termin_vereinbart: 0,
+                            maklervertrag_unterschrieben: 0,
+                            immobilie_verkauft: 0,
+                            absage: 0,
+                            // Lösche alle Termin-Felder
+                            termin_ort: null,
+                            termin_datum: null,
+                            termin_uhrzeit: null,
+                            termin_notiz: null,
+                            zweit_termin_ort: null,
+                            zweit_termin_datum: null,
+                            zweit_termin_uhrzeit: null,
+                            zweit_termin_notiz: null,
+                            maklervertrag_notiz: null,
+                            absage_notiz: null
+                        };
+                    } else {
+                        // Unkontaktiert: Setze alles zurück
+                        updateData = {
+                            makler_status: null,
+                            termin_vereinbart: 0,
+                            zweit_termin_vereinbart: 0,
+                            maklervertrag_unterschrieben: 0,
+                            immobilie_verkauft: 0,
+                            absage: 0,
+                            // Lösche alle Felder
+                            termin_ort: null,
+                            termin_datum: null,
+                            termin_uhrzeit: null,
+                            termin_notiz: null,
+                            zweit_termin_ort: null,
+                            zweit_termin_datum: null,
+                            zweit_termin_uhrzeit: null,
+                            zweit_termin_notiz: null,
+                            maklervertrag_notiz: null,
+                            absage_notiz: null
+                        };
+                    }
+                    
+                    try {
+                        const response = await authFetch(`${API_BASE}/leads/${leadId}`, {
+                            method: 'PUT',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(updateData)
+                        });
+                        
+                        if (response.ok) {
+                            const updatedLead = await response.json();
+                            const index = allLeads.findIndex(l => l.id === leadId);
+                            if (index !== -1) allLeads[index] = updatedLead;
+                            renderKanban();
+                        }
+                    } catch (error) {
+                        console.error('Fehler beim Aktualisieren:', error);
+                    }
+                });
+            });
+        }
+
+        function renderCalendar() {
+            const container = document.getElementById('leads-container');
+            
+            // Apply same filters as renderLeads
+            let filtered = allLeads;
+            const searchTerm = document.getElementById('search-leads')?.value.toLowerCase() || '';
+            
+            // Status-Filter
+            const activeFilters = [];
+            if (document.getElementById('filter-kein_status')?.checked) activeFilters.push('kein_status');
+            if (document.getElementById('filter-in_gespraechen')?.checked) activeFilters.push('in_gespraechen');
+            if (document.getElementById('filter-termin_vereinbart')?.checked) activeFilters.push('termin_vereinbart');
+            if (document.getElementById('filter-zweit_termin_vereinbart')?.checked) activeFilters.push('zweit_termin_vereinbart');
+            if (document.getElementById('filter-maklervertrag_unterschrieben')?.checked) activeFilters.push('maklervertrag_unterschrieben');
+            if (document.getElementById('filter-immobilie_verkauft')?.checked) activeFilters.push('immobilie_verkauft');
+            if (document.getElementById('filter-absage')?.checked) activeFilters.push('absage');
+            
+            if (activeFilters.length > 0) {
+                filtered = filtered.filter(l => {
+                    return activeFilters.some(filter => {
+                        if (filter === 'kein_status') return !l.makler_status;
+                        if (filter === 'termin_vereinbart') return l.termin_vereinbart === 1;
+                        if (filter === 'zweit_termin_vereinbart') return l.zweit_termin_vereinbart === 1;
+                        if (filter === 'maklervertrag_unterschrieben') return l.maklervertrag_unterschrieben === 1;
+                        if (filter === 'immobilie_verkauft') return l.immobilie_verkauft === 1;
+                        if (filter === 'absage') return l.absage === 1;
+                        if (filter === 'in_gespraechen') {
+                            return l.makler_status === 'in_gespraechen' && 
+                                   !(l.termin_vereinbart === 1 || l.zweit_termin_vereinbart === 1 || 
+                                     l.maklervertrag_unterschrieben === 1 || l.immobilie_verkauft === 1 || l.absage === 1);
+                        }
+                        return false;
+                    });
+                });
+            }
+            
+            // Favoriten-Filter
+            if (document.getElementById('filter-favoriten')?.checked) {
+                filtered = filtered.filter(l => l.favorit === 1);
+            }
+            
+            if (searchTerm) {
+                filtered = filtered.filter(l => {
+                    const searchFields = [
+                        l.id.toString(),
+                        l.lead_nummer ? l.lead_nummer.toString() : '',
+                        l.anbieter_name || '',
+                        l.postleitzahl || '',
+                        l.ort || '',
+                        l.telefonnummer || ''
+                    ];
+                    return searchFields.some(field => field.toLowerCase().includes(searchTerm));
+                });
+            }
+            
+            // FlexRecall-Leads herausfiltern, wenn Status "reklamiert" ist (nach Absage)
+            filtered = filtered.filter(l => l.status !== 'reklamiert');
+            
+            // Collect all appointments from filtered leads
+            const appointments = [];
+            filtered.forEach(lead => {
+                if (lead.termin_vereinbart === 1 && lead.termin_datum) {
+                    appointments.push({
+                        lead: lead,
+                        date: new Date(lead.termin_datum),
+                        type: 'termin',
+                        ort: lead.termin_ort,
+                        uhrzeit: lead.termin_uhrzeit
+                    });
+                }
+                if (lead.zweit_termin_vereinbart === 1 && lead.zweit_termin_datum) {
+                    appointments.push({
+                        lead: lead,
+                        date: new Date(lead.zweit_termin_datum),
+                        type: 'zweittermin',
+                        ort: lead.zweit_termin_ort,
+                        uhrzeit: lead.zweit_termin_uhrzeit
+                    });
+                }
+            });
+            
+            // Sort by date, but new leads (not viewed) first within same date
+            appointments.sort((a, b) => {
+                const aAngesehen = a.lead.makler_angesehen || 0;
+                const bAngesehen = b.lead.makler_angesehen || 0;
+                if (aAngesehen !== bAngesehen) {
+                    return aAngesehen - bAngesehen; // Nicht angesehen zuerst
+                }
+                return a.date - b.date; // Dann nach Datum
+            });
+            
+            // Group by month
+            const monthGroups = {};
+            appointments.forEach(apt => {
+                const monthKey = apt.date.toLocaleDateString('de-DE', { year: 'numeric', month: 'long' });
+                if (!monthGroups[monthKey]) monthGroups[monthKey] = [];
+                monthGroups[monthKey].push(apt);
+            });
+            
+            container.className = 'space-y-8';
+            container.innerHTML = Object.keys(monthGroups).map(month => `
+                <div class="bg-white rounded-3xl border border-gray-200/50 p-8" style="box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                    <h2 class="text-xl font-semibold text-[#1d1d1f] mb-6" style="letter-spacing: -0.01em; font-weight: 600;">${month}</h2>
+                    <div class="space-y-3">
+                        ${monthGroups[month].map(apt => {
+                            const dateStr = apt.date.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+                            const favoritIcon = apt.lead.favorit === 1 ? 'text-yellow-400 fill-current' : 'text-gray-300';
+                            const isNew = (apt.lead.makler_angesehen || 0) === 0;
+                            const isFlexRecall = apt.lead.status === 'flexrecall';
+                            
+                            let cardClasses = 'border rounded-xl p-4 hover:border-[#0071e3] hover:shadow-md transition-smooth cursor-pointer';
+                            if (isFlexRecall) {
+                                cardClasses = `border-purple-300 bg-purple-50 rounded-xl p-4 hover:border-purple-400 hover:shadow-md transition-smooth cursor-pointer ${isNew ? 'bg-purple-100' : ''}`;
+                            } else if (isNew) {
+                                cardClasses += ' bg-orange-50 border-orange-300';
+                            } else {
+                                cardClasses += ' border-gray-200';
+                            }
+                            
+                            return `
+                                <div class="${cardClasses}" onclick="openLeadDetail(${apt.lead.id})">
+                                    ${isFlexRecall ? '<div class="mb-2 px-3 py-1 bg-purple-600 text-white text-xs font-semibold rounded-full inline-block">FlexRecall</div>' : ''}
+                                    <div class="flex items-start justify-between mb-2">
+                                        <div class="flex items-center gap-2">
+                                            <button onclick="event.stopPropagation(); toggleFavorite(${apt.lead.id})" class="focus:outline-none">
+                                                <svg class="w-5 h-5 ${favoritIcon}" fill="currentColor" viewBox="0 0 20 20">
+                                                    <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+                                                </svg>
+                                            </button>
+                                            <span class="font-semibold text-[#1d1d1f]">Lead #${apt.lead.lead_nummer || apt.lead.id}</span>
+                                        </div>
+                                    </div>
+                                    <div class="text-lg font-medium text-[#1d1d1f] mb-1">${dateStr}</div>
+                                    ${apt.uhrzeit ? `<div class="text-sm text-[#6b7280] mb-1">🕐 ${escapeHtml(apt.uhrzeit)}</div>` : ''}
+                                    ${apt.ort ? `<div class="text-sm text-[#6b7280] mb-1">📍 ${escapeHtml(apt.ort)}</div>` : ''}
+                                    ${apt.lead.anbieter_name ? `<div class="text-sm text-[#1d1d1f]">👤 ${escapeHtml(apt.lead.anbieter_name)}</div>` : ''}
+                                    ${apt.type === 'zweittermin' ? '<div class="text-xs text-blue-600 mt-2">Zweittermin</div>' : ''}
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+            `).join('');
+            
+            if (appointments.length === 0) {
+                container.innerHTML = `
+                    <div class="bg-white rounded-3xl border border-gray-200/50 p-12 text-center" style="box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                        <p class="text-[#86868b] font-medium mb-1" style="font-weight: 500;">Keine Termine vorhanden</p>
+                        <p class="text-sm text-[#86868b] mt-2" style="font-weight: 400;">Vereinbaren Sie Termine, um sie hier zu sehen</p>
+                    </div>
+                `;
+            }
+        }
+
+        function renderStats() {
+            const container = document.getElementById('leads-container');
+            
+            const total = allLeads.length;
+            const unkontaktiert = allLeads.filter(l => !l.makler_status).length;
+            const inBearbeitung = allLeads.filter(l => l.makler_status === 'in_gespraechen' && !l.termin_vereinbart && !l.zweit_termin_vereinbart && !l.maklervertrag_unterschrieben && !l.immobilie_verkauft).length;
+            const termin = allLeads.filter(l => l.termin_vereinbart === 1).length;
+            const zweittermin = allLeads.filter(l => l.zweit_termin_vereinbart === 1).length;
+            const maklervertrag = allLeads.filter(l => l.maklervertrag_unterschrieben === 1).length;
+            const verkauft = allLeads.filter(l => l.immobilie_verkauft === 1).length;
+            const absage = allLeads.filter(l => l.absage === 1).length;
+            const favoriten = allLeads.filter(l => l.favorit === 1).length;
+            
+            // Calculate conversion rates
+            const kontaktRate = total > 0 ? ((total - unkontaktiert) / total * 100) : 0;
+            const verkaufsRate = (total - unkontaktiert) > 0 ? (verkauft / (total - unkontaktiert) * 100) : 0;
+            const terminRate = total > 0 ? (termin / total * 100) : 0;
+            const vertragRate = total > 0 ? (maklervertrag / total * 100) : 0;
+            
+            // Upcoming appointments
+            const today = new Date();
+            today.setHours(0, 0, 0, 0);
+            const upcomingAppointments = allLeads.filter(l => {
+                if (l.termin_vereinbart === 1 && l.termin_datum) {
+                    const aptDate = new Date(l.termin_datum);
+                    aptDate.setHours(0, 0, 0, 0);
+                    return aptDate >= today;
+                }
+                if (l.zweit_termin_vereinbart === 1 && l.zweit_termin_datum) {
+                    const aptDate = new Date(l.zweit_termin_datum);
+                    aptDate.setHours(0, 0, 0, 0);
+                    return aptDate >= today;
+                }
+                return false;
+            }).length;
+            
+            // Pipeline-Stufen
+            const pipeline = [
+                { label: 'Unkontaktiert', value: unkontaktiert, color: 'gray', icon: '📭' },
+                { label: 'In Bearbeitung', value: inBearbeitung, color: 'blue', icon: '💼' },
+                { label: 'Termin', value: termin, color: 'green', icon: '📅' },
+                { label: 'Zweittermin', value: zweittermin, color: 'blue', icon: '📆' },
+                { label: 'Maklervertrag', value: maklervertrag, color: 'purple', icon: '📝' },
+                { label: 'Verkauft', value: verkauft, color: 'yellow', icon: '✅' }
+            ];
+            
+            container.className = 'space-y-6';
+            container.innerHTML = `
+                <!-- Haupt-Statistiken -->
+                <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+                    <div class="bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl p-6 text-white shadow-md">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-blue-100 text-sm font-medium">Gesamt Leads</span>
+                            <span class="text-2xl">📊</span>
+                        </div>
+                        <div class="text-4xl font-bold">${total}</div>
+                    </div>
+                    <div class="bg-gradient-to-br from-green-500 to-green-600 rounded-xl p-6 text-white shadow-md">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-green-100 text-sm font-medium">Kontakt-Rate</span>
+                            <span class="text-2xl">📞</span>
+                        </div>
+                        <div class="text-4xl font-bold">${kontaktRate.toFixed(1)}%</div>
+                        <div class="mt-3 bg-green-400/30 rounded-full h-2">
+                            <div class="bg-white rounded-full h-2" style="width: ${kontaktRate}%"></div>
+                        </div>
+                    </div>
+                    <div class="bg-gradient-to-br from-purple-500 to-purple-600 rounded-xl p-6 text-white shadow-md">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-purple-100 text-sm font-medium">Verkaufs-Rate</span>
+                            <span class="text-2xl">💰</span>
+                        </div>
+                        <div class="text-4xl font-bold">${verkaufsRate.toFixed(1)}%</div>
+                        <div class="mt-3 bg-purple-400/30 rounded-full h-2">
+                            <div class="bg-white rounded-full h-2" style="width: ${verkaufsRate}%"></div>
+                        </div>
+                    </div>
+                    <div class="bg-gradient-to-br from-yellow-500 to-yellow-600 rounded-xl p-6 text-white shadow-md">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-yellow-100 text-sm font-medium">Verkauft</span>
+                            <span class="text-2xl">✅</span>
+                        </div>
+                        <div class="text-4xl font-bold">${verkauft}</div>
+                        <div class="text-yellow-100 text-xs mt-2">von ${total - unkontaktiert} kontaktierten Leads</div>
+                    </div>
+                </div>
+                
+                <!-- Pipeline-Übersicht -->
+                <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+                    <h3 class="text-lg font-semibold text-[#1d1d1f] mb-4">Lead-Pipeline</h3>
+                    <div class="space-y-4">
+                        ${pipeline.map(stage => {
+                            const percentage = total > 0 ? (stage.value / total * 100) : 0;
+                            const colorClasses = {
+                                gray: 'bg-gray-500',
+                                blue: 'bg-blue-500',
+                                green: 'bg-green-500',
+                                purple: 'bg-purple-500',
+                                yellow: 'bg-yellow-500'
+                            };
+                            return `
+                                <div>
+                                    <div class="flex items-center justify-between mb-2">
+                                        <div class="flex items-center gap-2">
+                                            <span class="text-xl">${stage.icon}</span>
+                                            <span class="text-sm font-medium text-gray-700">${stage.label}</span>
+                                        </div>
+                                        <div class="flex items-center gap-3">
+                                            <span class="text-2xl font-bold text-[#1d1d1f]">${stage.value}</span>
+                                            <span class="text-sm text-gray-500 w-12 text-right">${percentage.toFixed(1)}%</span>
+                                        </div>
+                                    </div>
+                                    <div class="w-full bg-gray-100 rounded-full h-3 overflow-hidden">
+                                        <div class="${colorClasses[stage.color]} h-full rounded-full transition-all duration-500" style="width: ${percentage}%"></div>
+                                    </div>
+                                </div>
+                            `;
+                        }).join('')}
+                    </div>
+                </div>
+                
+                <!-- Zusätzliche Metriken -->
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+                        <div class="flex items-center gap-3 mb-3">
+                            <div class="w-12 h-12 bg-orange-100 rounded-xl flex items-center justify-center">
+                                <span class="text-2xl">⭐</span>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-500">Favoriten</div>
+                                <div class="text-3xl font-bold text-[#1d1d1f]">${favoriten}</div>
+                            </div>
+                        </div>
+                        <div class="text-xs text-gray-400">${total > 0 ? ((favoriten / total * 100).toFixed(1)) : 0}% aller Leads</div>
+                    </div>
+                    
+                    <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+                        <div class="flex items-center gap-3 mb-3">
+                            <div class="w-12 h-12 bg-blue-100 rounded-xl flex items-center justify-center">
+                                <span class="text-2xl">📅</span>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-500">Anstehende Termine</div>
+                                <div class="text-3xl font-bold text-[#1d1d1f]">${upcomingAppointments}</div>
+                            </div>
+                        </div>
+                        <div class="text-xs text-gray-400">${termin + zweittermin > 0 ? ((upcomingAppointments / (termin + zweittermin) * 100).toFixed(1)) : 0}% aller Termine</div>
+                    </div>
+                    
+                    <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+                        <div class="flex items-center gap-3 mb-3">
+                            <div class="w-12 h-12 bg-red-100 rounded-xl flex items-center justify-center">
+                                <span class="text-2xl">❌</span>
+                            </div>
+                            <div>
+                                <div class="text-sm text-gray-500">Absagen</div>
+                                <div class="text-3xl font-bold text-[#1d1d1f]">${absage}</div>
+                            </div>
+                        </div>
+                        <div class="text-xs text-gray-400">${total > 0 ? ((absage / total * 100).toFixed(1)) : 0}% aller Leads</div>
+                    </div>
+                </div>
+                
+                <!-- Konversions-Funnel -->
+                <div class="bg-white rounded-xl border border-gray-200 p-6 shadow-sm">
+                    <h3 class="text-lg font-semibold text-[#1d1d1f] mb-4">Konversions-Funnel</h3>
+                    <div class="space-y-3">
+                        ${(() => {
+                            const funnelStages = [
+                                { label: 'Alle Leads', value: total, width: 100, color: 'gray' },
+                                { label: 'Kontaktiert', value: total - unkontaktiert, width: total > 0 ? ((total - unkontaktiert) / total * 100) : 0, color: 'blue' },
+                                { label: 'Termin vereinbart', value: termin, width: total > 0 ? (termin / total * 100) : 0, color: 'green' },
+                                { label: 'Maklervertrag', value: maklervertrag, width: total > 0 ? (maklervertrag / total * 100) : 0, color: 'purple' },
+                                { label: 'Verkauft', value: verkauft, width: total > 0 ? (verkauft / total * 100) : 0, color: 'yellow' }
+                            ];
+                            return funnelStages.map((stage, index) => {
+                                const colorClasses = {
+                                    gray: 'bg-gray-400',
+                                    blue: 'bg-blue-400',
+                                    green: 'bg-green-400',
+                                    purple: 'bg-purple-400',
+                                    yellow: 'bg-yellow-400'
+                                };
+                                const conversion = index > 0 && funnelStages[index - 1].value > 0 
+                                    ? ((stage.value / funnelStages[index - 1].value) * 100).toFixed(1) 
+                                    : '0.0';
+                                return `
+                                    <div class="relative">
+                                        <div class="flex items-center justify-between mb-2">
+                                            <span class="text-sm font-medium text-gray-700">${stage.label}</span>
+                                            <div class="flex items-center gap-3">
+                                                <span class="text-lg font-bold text-[#1d1d1f]">${stage.value}</span>
+                                                ${index > 0 ? `<span class="text-xs text-gray-500">${conversion}% Konversion</span>` : ''}
+                                            </div>
+                                        </div>
+                                        <div class="w-full bg-gray-100 rounded-full h-6 overflow-hidden relative">
+                                            <div class="${colorClasses[stage.color]} h-full rounded-full transition-all duration-500 flex items-center justify-end pr-3" style="width: ${stage.width}%">
+                                                ${stage.width > 10 ? `<span class="text-xs font-semibold text-white">${stage.width.toFixed(1)}%</span>` : ''}
+                                            </div>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('');
+                        })()}
+                    </div>
+                </div>
+            `;
+        }
+
+        async function markAsContacted(leadId) {
+            try {
+                const response = await authFetch(`${API_BASE}/leads/${leadId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ makler_status: 'in_gespraechen' })
+                });
+                if (response.ok) {
+                    const updatedLead = await response.json();
+                    const index = allLeads.findIndex(l => l.id === leadId);
+                    if (index !== -1) allLeads[index] = updatedLead;
+                    closeLeadDetail();
+                    renderLeads();
+                }
+            } catch (error) {
+                console.error('Fehler:', error);
+            }
+        }
+
+        async function archiveLead(leadId) {
+            if (!confirm('Möchten Sie diesen Lead wirklich ablehnen?')) return;
+            try {
+                const response = await authFetch(`${API_BASE}/leads/${leadId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ makler_status: 'nicht_funktioniert' })
+                });
+                if (response.ok) {
+                    const updatedLead = await response.json();
+                    const index = allLeads.findIndex(l => l.id === leadId);
+                    if (index !== -1) allLeads[index] = updatedLead;
+                    closeLeadDetail();
+                    renderLeads();
+                }
+            } catch (error) {
+                console.error('Fehler:', error);
+            }
+        }
+
+        async function openLeadDetail(leadId) {
+            const lead = allLeads.find(l => l.id === leadId);
+            if (!lead) return;
+            
+            // Markiere Lead als angesehen und setze Status auf "in_gespraechen" wenn noch nicht kontaktiert
+            const needsUpdate = !lead.makler_status || (lead.makler_angesehen || 0) === 0;
+            if (needsUpdate) {
+                try {
+                    const updateData = {};
+                    if (!lead.makler_status) {
+                        updateData.makler_status = 'in_gespraechen';
+                    }
+                    if ((lead.makler_angesehen || 0) === 0) {
+                        updateData.makler_angesehen = 1;
+                    }
+                    
+                    const response = await authFetch(`${API_BASE}/leads/${leadId}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(updateData)
+                    });
+                    if (response.ok) {
+                        const updatedLead = await response.json();
+                        const index = allLeads.findIndex(l => l.id === leadId);
+                        if (index !== -1) allLeads[index] = updatedLead;
+                        lead.makler_status = updatedLead.makler_status || lead.makler_status;
+                        lead.makler_angesehen = 1;
+                        // Aktualisiere die Ansicht, damit die orange Markierung verschwindet
+                        if (currentView === 'kanban') {
+                            renderKanban();
+                        } else if (currentView === 'calendar') {
+                            renderCalendar();
+                        } else {
+                            renderLeads();
+                        }
+                    }
+                } catch (error) {
+                    console.error('Fehler beim Status-Update:', error);
+                }
+            }
+            
+            const name = lead.anbieter_name || 'Kein Name';
+            const anfrageTyp = getAnfrageTyp(lead);
+            const isFlexRecall = lead.status === 'flexrecall';
+            
+            // Status-Anzeige: Wenn "Immobilie verkauft" aktiviert ist, zeige "verkauft", sonst normalen Status
+            // Bei FlexRecall: Zeige FlexRecall, es sei denn Checkliste wurde bearbeitet
+            let displayStatus = lead.makler_status;
+            if (isFlexRecall && !getChecklistStatusLabel(lead)) {
+                // FlexRecall ohne aktivierte Checkliste
+                displayStatus = 'flexrecall';
+            } else if (lead.immobilie_verkauft === 1) {
+                displayStatus = 'verkauft';
+            }
+            // Wenn kein Status gesetzt, zeige "Unkontaktiert" (sollte nicht passieren, da beim Öffnen gesetzt wird)
+            const status = displayStatus === 'flexrecall' ? 'FlexRecall' : getStatusLabel(displayStatus, lead);
+            const telefon = lead.telefonnummer || '';
+            const preis = lead.preis ? Number(lead.preis) : null;
+            const preisStr = preis && !isNaN(preis) && preis > 0 ? `${preis.toLocaleString('de-DE')} €` : null;
+            const ort = [lead.postleitzahl, lead.ort].filter(Boolean).join(' ');
+            const kontaktDatum = lead.kontakt_datum ? new Date(lead.kontakt_datum + 'T00:00:00').toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' }) : null;
+            const kontaktZeitraum = lead.kontakt_zeitraum || null;
+            
+            // Telefon-Kontakt Daten
+            const telefonKontaktErgebnis = lead.telefon_kontakt_ergebnis || '';
+            const telefonKontaktDatum = lead.telefon_kontakt_datum ? new Date(lead.telefon_kontakt_datum + 'T00:00:00').toISOString().split('T')[0] : '';
+            const telefonKontaktUhrzeit = lead.telefon_kontakt_uhrzeit || '';
+            
+            // Checklisten-Daten (Boolean-Konvertierung: 1 = true, 0/null = false)
+            const terminVereinbart = lead.termin_vereinbart === 1;
+            const absage = lead.absage === 1;
+            const zweitTerminVereinbart = lead.zweit_termin_vereinbart === 1;
+            const maklervertragUnterschrieben = lead.maklervertrag_unterschrieben === 1;
+            const immobilieVerkauft = lead.immobilie_verkauft === 1;
+            
+            const modal = document.createElement('div');
+            modal.className = 'fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-6';
+            modal.id = 'lead-detail-modal';
+            modal.innerHTML = `
+                <div class="bg-white rounded-2xl shadow-xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+                    <!-- Header -->
+                    <div class="px-8 py-6 border-b border-gray-200 flex-shrink-0">
+                        <div class="flex justify-between items-start mb-4">
+                            <div>
+                                <h2 class="text-2xl font-medium text-[#1d1d1f] mb-1">${escapeHtml(name)}</h2>
+                                <div class="flex items-center gap-3 text-sm text-gray-500">
+                                    ${lead.status === 'flexrecall' ? '<span class="px-3 py-1 bg-purple-600 text-white text-xs font-semibold rounded-full">FlexRecall</span>' : ''}
+                                    <span class="font-semibold">Lead #${lead.lead_nummer || lead.id}</span>
+                                    <span>•</span>
+                                    <span>${escapeHtml(anfrageTyp)}</span>
+                                    <span>•</span>
+                                    <span>${status}</span>
+                                </div>
+                            </div>
+                            <button onclick="closeLeadDetail()" class="text-gray-400 hover:text-[#6b7280]">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Content -->
+                    <div class="px-8 py-6 overflow-y-auto flex-1 space-y-8" style="max-height: calc(90vh - 120px);">
+                        <!-- ABSCHNITT 1 – Anfrage -->
+                        <div>
+                            <h3 class="text-sm font-medium text-gray-500 mb-3 uppercase tracking-wide">Anfrage</h3>
+                            <div class="text-base text-[#1d1d1f] leading-relaxed whitespace-pre-wrap" style="word-wrap: break-word; overflow-wrap: break-word;">
+                                ${lead.beschreibung ? escapeHtml(lead.beschreibung) : '<span class="text-gray-400 italic">Keine Anfrage vorhanden</span>'}
+                            </div>
+                        </div>
+                        
+                        <!-- ABSCHNITT 2 – Eckdaten -->
+                        <div>
+                            <h3 class="text-sm font-medium text-gray-500 mb-3 uppercase tracking-wide">Eckdaten</h3>
+                            <div class="grid grid-cols-2 gap-4">
+                                ${preisStr ? `
+                                <div>
+                                    <div class="text-xs text-gray-500 mb-1">Budget</div>
+                                    <div class="text-lg font-medium text-[#1d1d1f]">${preisStr}</div>
+                                </div>
+                                ` : ''}
+                                ${ort ? `
+                                <div>
+                                    <div class="text-xs text-gray-500 mb-1">Ort</div>
+                                    <div class="text-base text-[#1d1d1f]">${escapeHtml(ort)}</div>
+                                </div>
+                                ` : ''}
+                                ${lead.immobilien_typ ? `
+                                <div>
+                                    <div class="text-xs text-gray-500 mb-1">Objektart</div>
+                                    <div class="text-base text-[#1d1d1f]">${escapeHtml(lead.immobilien_typ)}</div>
+                                </div>
+                                ` : ''}
+                                ${lead.baujahr ? `
+                                <div>
+                                    <div class="text-xs text-gray-500 mb-1">Baujahr</div>
+                                    <div class="text-base text-[#1d1d1f]">${lead.baujahr}</div>
+                                </div>
+                                ` : ''}
+                                ${lead.wohnflaeche || lead.grundstuecksflaeche ? `
+                                <div>
+                                    <div class="text-xs text-gray-500 mb-1">Fläche</div>
+                                    <div class="text-base text-[#1d1d1f]">
+                                        ${lead.wohnflaeche ? `Wohnfläche: ${lead.wohnflaeche} m²` : ''}
+                                        ${lead.wohnflaeche && lead.grundstuecksflaeche ? '<br>' : ''}
+                                        ${lead.grundstuecksflaeche ? `Grundstück: ${lead.grundstuecksflaeche} m²` : ''}
+                                    </div>
+                                </div>
+                                ` : ''}
+                                ${lead.features ? `
+                                <div>
+                                    <div class="text-xs text-gray-500 mb-1">Features</div>
+                                    <div class="text-base text-[#1d1d1f]">${escapeHtml(lead.features)}</div>
+                                </div>
+                                ` : ''}
+                                ${lead.lage ? `
+                                <div class="col-span-2">
+                                    <div class="text-xs text-gray-500 mb-1">Lagebeschreibung</div>
+                                    <div class="text-base text-[#1d1d1f]">${escapeHtml(lead.lage)}</div>
+                                </div>
+                                ` : ''}
+                                ${kontaktDatum || kontaktZeitraum ? `
+                                <div class="col-span-2">
+                                    <div class="text-xs text-gray-500 mb-1">Kontaktzeitpunkt</div>
+                                    <div class="text-base text-[#1d1d1f]">
+                                        ${kontaktDatum ? kontaktDatum : ''}
+                                        ${kontaktDatum && kontaktZeitraum ? ' • ' : ''}
+                                        ${kontaktZeitraum ? escapeHtml(kontaktZeitraum) : ''}
+                                    </div>
+                                </div>
+                                ` : ''}
+                            </div>
+                        </div>
+                        
+                        <!-- ABSCHNITT 3 – Kontaktdaten -->
+                        <div>
+                            <h3 class="text-sm font-medium text-gray-500 mb-3 uppercase tracking-wide">Kontaktdaten</h3>
+                            <div class="space-y-4">
+                                ${telefon ? `
+                                <div>
+                                    <div class="text-xs text-gray-500 mb-2">Telefon</div>
+                                    <a href="tel:${escapeHtml(telefon)}" class="text-base text-[#0071e3] hover:underline font-medium">${escapeHtml(telefon)}</a>
+                                    
+                                    <!-- Telefon-Kontakt-Ergebnis -->
+                                    <div id="telefon-kontakt-form" class="mt-4 space-y-3">
+                                        <div class="flex gap-4">
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="telefon_kontakt_ergebnis" value="erreicht" ${telefonKontaktErgebnis === 'erreicht' ? 'checked' : ''} class="w-4 h-4 text-[#0071e3] border-gray-200 focus:ring-[#0071e3]">
+                                                <span class="text-sm text-[#1d1d1f]">Erreicht</span>
+                                            </label>
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="telefon_kontakt_ergebnis" value="nicht_erreicht" ${telefonKontaktErgebnis === 'nicht_erreicht' ? 'checked' : ''} class="w-4 h-4 text-[#0071e3] border-gray-200 focus:ring-[#0071e3]">
+                                                <span class="text-sm text-[#1d1d1f]">Nicht erreicht</span>
+                                            </label>
+                                            <label class="flex items-center gap-2 cursor-pointer">
+                                                <input type="radio" name="telefon_kontakt_ergebnis" value="rueckruf" ${telefonKontaktErgebnis === 'rueckruf' ? 'checked' : ''} class="w-4 h-4 text-[#0071e3] border-gray-200 focus:ring-[#0071e3]">
+                                                <span class="text-sm text-[#1d1d1f]">Rückruf</span>
+                                            </label>
+                                        </div>
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-xs text-gray-500 mb-1">Datum</label>
+                                                <input type="date" id="telefon-kontakt-datum" value="${telefonKontaktDatum}" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400">
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs text-gray-500 mb-1">Uhrzeit</label>
+                                                <input type="time" id="telefon-kontakt-uhrzeit" value="${telefonKontaktUhrzeit}" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400">
+                                            </div>
+                                        </div>
+                                    </form>
+                                </div>
+                                ` : ''}
+                                <div>
+                                    <div class="text-xs text-gray-500 mb-1">Bevorzugter Kontaktweg</div>
+                                    <div class="text-base text-[#1d1d1f]">Telefon</div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Checkliste -->
+                        <div>
+                            <h3 class="text-sm font-medium text-gray-500 mb-3 uppercase tracking-wide">Checkliste</h3>
+                            <form id="checkliste-form" onsubmit="saveCheckliste(event, ${lead.id})" class="space-y-4">
+                                <!-- Termin vereinbart -->
+                                <div class="border border-gray-200 rounded-xl p-4">
+                                    <label class="flex items-center gap-3 cursor-pointer">
+                                        <input type="checkbox" id="check-termin-vereinbart" ${terminVereinbart ? 'checked' : ''} onchange="toggleTerminFields()" class="w-5 h-5 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                        <span class="text-base font-medium text-[#1d1d1f]">Termin vereinbart</span>
+                                    </label>
+                                    <div id="termin-fields" class="mt-3 space-y-3 ${terminVereinbart ? '' : 'hidden'}">
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-xs text-gray-500 mb-1">Ort</label>
+                                                <input type="text" id="check-termin-ort" value="${escapeHtml(lead.termin_ort || '')}" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400">
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs text-gray-500 mb-1">Datum</label>
+                                                <input type="date" id="check-termin-datum" value="${lead.termin_datum ? new Date(lead.termin_datum + 'T00:00:00').toISOString().split('T')[0] : ''}" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400">
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">Uhrzeit</label>
+                                            <input type="time" id="check-termin-uhrzeit" value="${lead.termin_uhrzeit || ''}" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">Notiz zum Termin</label>
+                                            <textarea id="check-termin-notiz" rows="2" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400 resize-y">${escapeHtml(lead.termin_notiz || '')}</textarea>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Absage -->
+                                <div class="border border-gray-200 rounded-xl p-4">
+                                    <label class="flex items-center gap-3 cursor-pointer">
+                                        <input type="checkbox" id="check-absage" ${absage ? 'checked' : ''} onchange="toggleAbsageFields()" class="w-5 h-5 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                        <span class="text-base font-medium text-[#1d1d1f]">Absage</span>
+                                    </label>
+                                    <div id="absage-fields" class="mt-3 ${absage ? '' : 'hidden'}">
+                                        <label class="block text-xs text-gray-500 mb-1">Notiz zur Absage</label>
+                                        <textarea id="check-absage-notiz" rows="2" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400 resize-y">${escapeHtml(lead.absage_notiz || '')}</textarea>
+                                    </div>
+                                </div>
+                                
+                                <!-- Zweittermin (nur sichtbar wenn erster Termin vorhanden) -->
+                                ${terminVereinbart ? `
+                                <div class="border border-gray-200 rounded-xl p-4">
+                                    <div class="flex items-center gap-3">
+                                        <input type="checkbox" id="check-zweit-termin-vereinbart" ${zweitTerminVereinbart ? 'checked' : ''} onchange="toggleZweitTerminFields()" class="w-5 h-5 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                        <label for="check-zweit-termin-vereinbart" class="text-base font-medium text-[#1d1d1f] cursor-pointer">Zweittermin vereinbart</label>
+                                    </div>
+                                    <div id="zweit-termin-fields" class="mt-3 space-y-3 ${zweitTerminVereinbart ? '' : 'hidden'}">
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-xs text-gray-500 mb-1">Ort</label>
+                                                <input type="text" id="check-zweit-termin-ort" value="${escapeHtml(lead.zweit_termin_ort || '')}" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400">
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs text-gray-500 mb-1">Datum</label>
+                                                <input type="date" id="check-zweit-termin-datum" value="${lead.zweit_termin_datum ? new Date(lead.zweit_termin_datum + 'T00:00:00').toISOString().split('T')[0] : ''}" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400">
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">Uhrzeit</label>
+                                            <input type="time" id="check-zweit-termin-uhrzeit" value="${lead.zweit_termin_uhrzeit || ''}" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400">
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">Notiz zum Zweittermin</label>
+                                            <textarea id="check-zweit-termin-notiz" rows="2" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400 resize-y">${escapeHtml(lead.zweit_termin_notiz || '')}</textarea>
+                                        </div>
+                                    </div>
+                                </div>
+                                ` : ''}
+                                
+                                <!-- Maklervertrag unterschrieben -->
+                                <div class="border border-gray-200 rounded-xl p-4">
+                                    <label class="flex items-center gap-3 cursor-pointer">
+                                        <input type="checkbox" id="check-maklervertrag-unterschrieben" ${maklervertragUnterschrieben ? 'checked' : ''} onchange="toggleMaklervertragFields()" class="w-5 h-5 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                        <span class="text-base font-medium text-[#1d1d1f]">Maklervertrag unterschrieben</span>
+                                    </label>
+                                    <div id="maklervertrag-fields" class="mt-3 ${maklervertragUnterschrieben ? '' : 'hidden'}">
+                                        <label class="block text-xs text-gray-500 mb-1">Notiz</label>
+                                        <textarea id="check-maklervertrag-notiz" rows="2" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400 resize-y">${escapeHtml(lead.maklervertrag_notiz || '')}</textarea>
+                                    </div>
+                                </div>
+                                
+                                <!-- Immobilie verkauft (Ziel) -->
+                                <div class="border border-gray-200 rounded-xl p-4">
+                                    <label class="flex items-center gap-3 cursor-pointer">
+                                        <input type="checkbox" id="check-immobilie-verkauft" ${immobilieVerkauft ? 'checked' : ''} onchange="toggleImmobilieVerkauftFields()" class="w-5 h-5 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                        <span class="text-base font-medium text-[#1d1d1f]">Immobilie verkauft</span>
+                                    </label>
+                                    <div id="immobilie-verkauft-fields" class="mt-3 space-y-3 ${immobilieVerkauft ? '' : 'hidden'}">
+                                        <div class="grid grid-cols-2 gap-3">
+                                            <div>
+                                                <label class="block text-xs text-gray-500 mb-1">Verkaufsdatum</label>
+                                                <input type="date" id="check-immobilie-verkauft-datum" value="${lead.immobilie_verkauft_datum ? new Date(lead.immobilie_verkauft_datum + 'T00:00:00').toISOString().split('T')[0] : ''}" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400">
+                                            </div>
+                                            <div>
+                                                <label class="block text-xs text-gray-500 mb-1">Verkaufspreis</label>
+                                                <input type="text" id="check-immobilie-verkauft-preis" value="${escapeHtml(lead.immobilie_verkauft_preis || '')}" placeholder="z.B. 250.000 €" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400">
+                                            </div>
+                                        </div>
+                                        <div>
+                                            <label class="block text-xs text-gray-500 mb-1">Beteiligungsprozentsatz (%)</label>
+                                            <input type="number" id="check-immobilie-verkauft-beteiligung" step="0.1" min="0" max="100" value="${lead.beteiligungs_prozent || ''}" placeholder="z.B. 3.5" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl focus:outline-none focus:ring-1 focus:ring-gray-400">
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        
+                        <!-- Notizen -->
+                        <div>
+                            <h3 class="text-sm font-medium text-gray-500 mb-3 uppercase tracking-wide">Ihre Notizen</h3>
+                            <div>
+                                <textarea id="lead-makler-beschreibung" rows="4" placeholder="Notizen hinzufügen..." class="w-full px-4 py-3 border border-gray-200 rounded-xl bg-white text-base text-[#1d1d1f] focus:outline-none focus:ring-2 focus:ring-gray-400 focus:border-gray-400 resize-y">${escapeHtml(lead.makler_beschreibung || '')}</textarea>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            
+            // Speichere Lead-ID im Modal als data-Attribut
+            modal.setAttribute('data-lead-id', leadId);
+            
+            // Schließe Modal beim Klick außerhalb
+            modal.addEventListener('click', function(e) {
+                if (e.target === modal) {
+                    closeLeadDetail();
+                }
+            });
+        }
+
+        async function closeLeadDetail() {
+            const modal = document.getElementById('lead-detail-modal');
+            if (modal) {
+                // Hole die Lead-ID aus dem Modal data-Attribut
+                const leadIdAttr = modal.getAttribute('data-lead-id');
+                if (leadIdAttr) {
+                    const leadId = parseInt(leadIdAttr);
+                    console.log('Schließe Modal, speichere Daten für Lead:', leadId);
+                    // Speichere automatisch alle Daten vor dem Schließen
+                    await autoSaveAllData(leadId);
+                } else {
+                    console.warn('Keine Lead-ID im Modal gefunden');
+                }
+                modal.remove();
+            }
+        }
+
+
+        function toggleTerminFields() {
+            const checked = document.getElementById('check-termin-vereinbart').checked;
+            document.getElementById('termin-fields').classList.toggle('hidden', !checked);
+            // Wenn Zweittermin-Sektion noch nicht existiert, sie wird dynamisch erstellt
+        }
+
+        function toggleAbsageFields() {
+            const checked = document.getElementById('check-absage').checked;
+            document.getElementById('absage-fields').classList.toggle('hidden', !checked);
+        }
+
+        function toggleZweitTerminFields() {
+            const checked = document.getElementById('check-zweit-termin-vereinbart').checked;
+            document.getElementById('zweit-termin-fields').classList.toggle('hidden', !checked);
+        }
+
+        function toggleMaklervertragFields() {
+            const checked = document.getElementById('check-maklervertrag-unterschrieben').checked;
+            document.getElementById('maklervertrag-fields').classList.toggle('hidden', !checked);
+        }
+
+        function toggleImmobilieVerkauftFields() {
+            const checked = document.getElementById('check-immobilie-verkauft').checked;
+            document.getElementById('immobilie-verkauft-fields').classList.toggle('hidden', !checked);
+        }
+
+        async function autoSaveAllData(leadId) {
+            try {
+                // Hole aktuellen Lead aus allLeads
+                const currentLead = allLeads.find(l => l.id === leadId);
+                
+                // Sammle alle Checklisten-Daten
+                const updateData = {};
+                
+                // Checklisten-Daten
+                const terminVereinbartEl = document.getElementById('check-termin-vereinbart');
+                if (terminVereinbartEl) {
+                    updateData.termin_vereinbart = terminVereinbartEl.checked ? 1 : 0;
+                    const terminOrtEl = document.getElementById('check-termin-ort');
+                    const terminDatumEl = document.getElementById('check-termin-datum');
+                    const terminUhrzeitEl = document.getElementById('check-termin-uhrzeit');
+                    const terminNotizEl = document.getElementById('check-termin-notiz');
+                    
+                    if (updateData.termin_vereinbart) {
+                        updateData.termin_ort = terminOrtEl ? terminOrtEl.value || null : null;
+                        updateData.termin_datum = terminDatumEl ? terminDatumEl.value || null : null;
+                        updateData.termin_uhrzeit = terminUhrzeitEl ? terminUhrzeitEl.value || null : null;
+                        updateData.termin_notiz = terminNotizEl ? terminNotizEl.value.trim() || null : null;
+                    } else {
+                        updateData.termin_ort = null;
+                        updateData.termin_datum = null;
+                        updateData.termin_uhrzeit = null;
+                        updateData.termin_notiz = null;
+                    }
+                }
+                
+                const absageEl = document.getElementById('check-absage');
+                if (absageEl) {
+                    updateData.absage = absageEl.checked ? 1 : 0;
+                    const absageNotizEl = document.getElementById('check-absage-notiz');
+                    if (updateData.absage) {
+                        updateData.absage_notiz = absageNotizEl ? absageNotizEl.value.trim() || null : null;
+                    } else {
+                        updateData.absage_notiz = null;
+                    }
+                }
+                
+                const zweitTerminEl = document.getElementById('check-zweit-termin-vereinbart');
+                if (zweitTerminEl) {
+                    updateData.zweit_termin_vereinbart = zweitTerminEl.checked ? 1 : 0;
+                    const zweitTerminOrtEl = document.getElementById('check-zweit-termin-ort');
+                    const zweitTerminDatumEl = document.getElementById('check-zweit-termin-datum');
+                    const zweitTerminUhrzeitEl = document.getElementById('check-zweit-termin-uhrzeit');
+                    const zweitTerminNotizEl = document.getElementById('check-zweit-termin-notiz');
+                    
+                    if (updateData.zweit_termin_vereinbart) {
+                        updateData.zweit_termin_ort = zweitTerminOrtEl ? zweitTerminOrtEl.value || null : null;
+                        updateData.zweit_termin_datum = zweitTerminDatumEl ? zweitTerminDatumEl.value || null : null;
+                        updateData.zweit_termin_uhrzeit = zweitTerminUhrzeitEl ? zweitTerminUhrzeitEl.value || null : null;
+                        updateData.zweit_termin_notiz = zweitTerminNotizEl ? zweitTerminNotizEl.value.trim() || null : null;
+                    } else {
+                        updateData.zweit_termin_ort = null;
+                        updateData.zweit_termin_datum = null;
+                        updateData.zweit_termin_uhrzeit = null;
+                        updateData.zweit_termin_notiz = null;
+                    }
+                }
+                
+                const maklervertragEl = document.getElementById('check-maklervertrag-unterschrieben');
+                if (maklervertragEl) {
+                    updateData.maklervertrag_unterschrieben = maklervertragEl.checked ? 1 : 0;
+                    const maklervertragNotizEl = document.getElementById('check-maklervertrag-notiz');
+                    if (updateData.maklervertrag_unterschrieben) {
+                        updateData.maklervertrag_notiz = maklervertragNotizEl ? maklervertragNotizEl.value.trim() || null : null;
+                    } else {
+                        updateData.maklervertrag_notiz = null;
+                    }
+                }
+                
+                const immobilieVerkauftEl = document.getElementById('check-immobilie-verkauft');
+                if (immobilieVerkauftEl) {
+                    updateData.immobilie_verkauft = immobilieVerkauftEl.checked ? 1 : 0;
+                    const immobilieVerkauftDatumEl = document.getElementById('check-immobilie-verkauft-datum');
+                    const immobilieVerkauftPreisEl = document.getElementById('check-immobilie-verkauft-preis');
+                    const immobilieVerkauftBeteiligungEl = document.getElementById('check-immobilie-verkauft-beteiligung');
+                    
+                    if (updateData.immobilie_verkauft) {
+                        updateData.immobilie_verkauft_datum = immobilieVerkauftDatumEl ? immobilieVerkauftDatumEl.value || null : null;
+                        updateData.immobilie_verkauft_preis = immobilieVerkauftPreisEl ? immobilieVerkauftPreisEl.value.trim() || null : null;
+                        updateData.beteiligungs_prozent = immobilieVerkauftBeteiligungEl ? (immobilieVerkauftBeteiligungEl.value ? parseFloat(immobilieVerkauftBeteiligungEl.value) : null) : null;
+                        // Nur Status setzen wenn aktiviert, nicht zurücksetzen wenn deaktiviert
+                        updateData.makler_status = 'verkauft';
+                    } else {
+                        updateData.immobilie_verkauft_datum = null;
+                        updateData.immobilie_verkauft_preis = null;
+                        updateData.beteiligungs_prozent = null;
+                        // Status NICHT zurücksetzen - bleibt auf "in_gespraechen" oder was auch immer aktuell ist
+                    }
+                }
+                
+                // Telefon-Kontakt-Daten
+                const telefonKontaktErgebnisEl = document.querySelector('input[name="telefon_kontakt_ergebnis"]:checked');
+                if (telefonKontaktErgebnisEl) {
+                    updateData.telefon_kontakt_ergebnis = telefonKontaktErgebnisEl.value;
+                }
+                const telefonKontaktDatumEl = document.getElementById('telefon-kontakt-datum');
+                if (telefonKontaktDatumEl) {
+                    updateData.telefon_kontakt_datum = telefonKontaktDatumEl.value || null;
+                }
+                const telefonKontaktUhrzeitEl = document.getElementById('telefon-kontakt-uhrzeit');
+                if (telefonKontaktUhrzeitEl) {
+                    updateData.telefon_kontakt_uhrzeit = telefonKontaktUhrzeitEl.value || null;
+                }
+                
+                // Makler-Notizen
+                const maklerBeschreibungEl = document.getElementById('lead-makler-beschreibung');
+                if (maklerBeschreibungEl) {
+                    updateData.makler_beschreibung = maklerBeschreibungEl.value.trim() || null;
+                }
+                
+                // Prüfe ob überhaupt Daten vorhanden sind
+                const hasData = Object.keys(updateData).length > 0;
+                console.log('Sende Update-Daten (' + Object.keys(updateData).length + ' Felder):', JSON.stringify(updateData));
+                
+                if (!hasData) {
+                    console.warn('Keine Daten zum Speichern gefunden!');
+                    return;
+                }
+                
+                // Immer speichern, auch wenn updateData leer ist (für Status-Updates)
+                const response = await authFetch(`${API_BASE}/leads/${leadId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updateData)
+                });
+                
+                if (response.ok) {
+                    const updatedLead = await response.json();
+                    console.log('Zurückgekommene Daten - Status:', updatedLead.status, 'Termin:', updatedLead.termin_vereinbart, 'Absage:', updatedLead.absage, 'Verkauft:', updatedLead.immobilie_verkauft);
+                    const index = allLeads.findIndex(l => l.id === leadId);
+                    if (index !== -1) {
+                        // Aktualisiere den Lead komplett mit allen zurückgekommenen Daten
+                        allLeads[index] = updatedLead;
+                        console.log('Lead in allLeads aktualisiert. Status:', allLeads[index].status, 'Termin vereinbart:', allLeads[index].termin_vereinbart, 'Absage:', allLeads[index].absage);
+                        
+                        // Wenn Status "reklamiert" ist (nach Absage bei FlexRecall), entferne Lead aus der Liste
+                        if (updatedLead.status === 'reklamiert') {
+                            allLeads = allLeads.filter(l => l.id !== leadId);
+                            closeLeadDetail();
+                        }
+                        
+                        // Aktualisiere die aktuelle View in Echtzeit
+                        applyFilters();
+                    } else {
+                        console.warn('Lead nicht in allLeads gefunden:', leadId);
+                    }
+                } else {
+                    const errorText = await response.text();
+                    console.error('Fehler beim Speichern:', response.status, errorText);
+                }
+            } catch (error) {
+                console.error('Fehler beim automatischen Speichern:', error);
+            }
+        }
+
+        async function saveLeadDetail(event, leadId) {
+            event.preventDefault();
+            
+            const maklerBeschreibung = document.getElementById('lead-makler-beschreibung').value.trim() || null;
+            
+            try {
+                const response = await authFetch(`${API_BASE}/leads/${leadId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        makler_beschreibung: maklerBeschreibung
+                    })
+                });
+                
+                if (response.ok) {
+                    const updatedLead = await response.json();
+                    // Aktualisiere den Lead in allLeads
+                    const index = allLeads.findIndex(l => l.id === leadId);
+                    if (index !== -1) {
+                        allLeads[index] = updatedLead;
+                    }
+                    // Modal bleibt offen, aktualisiere nur die Anzeige
+                    closeLeadDetail();
+                    openLeadDetail(leadId);
+                } else {
+                    const error = await response.json().catch(() => ({ detail: 'Fehler beim Speichern' }));
+                    alert('Fehler beim Speichern: ' + (error.detail || 'Unbekannter Fehler'));
+                }
+            } catch (error) {
+                console.error('Fehler beim Speichern:', error);
+                alert('Fehler beim Speichern: ' + error.message);
+            }
+        }
+
+        async function saveTelefonKontakt(event, leadId) {
+            event.preventDefault();
+            
+            const ergebnis = document.querySelector('input[name="telefon_kontakt_ergebnis"]:checked')?.value || null;
+            const datum = document.getElementById('telefon-kontakt-datum').value || null;
+            const uhrzeit = document.getElementById('telefon-kontakt-uhrzeit').value || null;
+            
+            try {
+                const response = await authFetch(`${API_BASE}/leads/${leadId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        telefon_kontakt_ergebnis: ergebnis,
+                        telefon_kontakt_datum: datum,
+                        telefon_kontakt_uhrzeit: uhrzeit
+                    })
+                });
+                
+                if (response.ok) {
+                    const updatedLead = await response.json();
+                    // Aktualisiere den Lead in allLeads
+                    const index = allLeads.findIndex(l => l.id === leadId);
+                    if (index !== -1) {
+                        allLeads[index] = updatedLead;
+                    }
+                    // Modal bleibt offen, aktualisiere nur die Anzeige
+                    closeLeadDetail();
+                    openLeadDetail(leadId);
+                } else {
+                    const error = await response.json().catch(() => ({ detail: 'Fehler beim Speichern' }));
+                    alert('Fehler beim Speichern: ' + (error.detail || 'Unbekannter Fehler'));
+                }
+            } catch (error) {
+                console.error('Fehler beim Speichern:', error);
+                alert('Fehler beim Speichern: ' + error.message);
+            }
+        }
+
+        async function saveCheckliste(event, leadId) {
+            event.preventDefault();
+            // Sammle alle Checklisten-Daten
+            const updateData = {
+                termin_vereinbart: document.getElementById('check-termin-vereinbart').checked ? 1 : 0,
+                absage: document.getElementById('check-absage').checked ? 1 : 0,
+                maklervertrag_unterschrieben: document.getElementById('check-maklervertrag-unterschrieben').checked ? 1 : 0,
+                immobilie_verkauft: document.getElementById('check-immobilie-verkauft').checked ? 1 : 0
+            };
+            
+            // Termin-Felder
+            if (updateData.termin_vereinbart) {
+                updateData.termin_ort = document.getElementById('check-termin-ort').value || null;
+                updateData.termin_datum = document.getElementById('check-termin-datum').value || null;
+                updateData.termin_uhrzeit = document.getElementById('check-termin-uhrzeit').value || null;
+                updateData.termin_notiz = document.getElementById('check-termin-notiz').value.trim() || null;
+            } else {
+                updateData.termin_ort = null;
+                updateData.termin_datum = null;
+                updateData.termin_uhrzeit = null;
+                updateData.termin_notiz = null;
+            }
+            
+            // Absage-Notiz
+            if (updateData.absage) {
+                updateData.absage_notiz = document.getElementById('check-absage-notiz').value.trim() || null;
+            } else {
+                updateData.absage_notiz = null;
+            }
+            
+            // Zweittermin-Felder
+            const zweitTerminCheckbox = document.getElementById('check-zweit-termin-vereinbart');
+            if (zweitTerminCheckbox) {
+                updateData.zweit_termin_vereinbart = zweitTerminCheckbox.checked ? 1 : 0;
+                if (updateData.zweit_termin_vereinbart) {
+                    updateData.zweit_termin_ort = document.getElementById('check-zweit-termin-ort').value || null;
+                    updateData.zweit_termin_datum = document.getElementById('check-zweit-termin-datum').value || null;
+                    updateData.zweit_termin_uhrzeit = document.getElementById('check-zweit-termin-uhrzeit').value || null;
+                    updateData.zweit_termin_notiz = document.getElementById('check-zweit-termin-notiz').value.trim() || null;
+                } else {
+                    updateData.zweit_termin_ort = null;
+                    updateData.zweit_termin_datum = null;
+                    updateData.zweit_termin_uhrzeit = null;
+                    updateData.zweit_termin_notiz = null;
+                }
+            }
+            
+            // Maklervertrag-Notiz
+            if (updateData.maklervertrag_unterschrieben) {
+                updateData.maklervertrag_notiz = document.getElementById('check-maklervertrag-notiz').value.trim() || null;
+            } else {
+                updateData.maklervertrag_notiz = null;
+            }
+            
+            // Immobilie verkauft - Datum, Preis und Beteiligungsprozentsatz
+            if (updateData.immobilie_verkauft) {
+                updateData.immobilie_verkauft_datum = document.getElementById('check-immobilie-verkauft-datum').value || null;
+                updateData.immobilie_verkauft_preis = document.getElementById('check-immobilie-verkauft-preis').value.trim() || null;
+                const beteiligungEl = document.getElementById('check-immobilie-verkauft-beteiligung');
+                updateData.beteiligungs_prozent = beteiligungEl && beteiligungEl.value ? parseFloat(beteiligungEl.value) : null;
+                updateData.makler_status = 'verkauft';
+            } else {
+                updateData.immobilie_verkauft_datum = null;
+                updateData.immobilie_verkauft_preis = null;
+                updateData.beteiligungs_prozent = null;
+            }
+            
+            try {
+                const response = await authFetch(`${API_BASE}/leads/${leadId}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(updateData)
+                });
+                
+                if (response.ok) {
+                    const updatedLead = await response.json();
+                    // Aktualisiere den Lead in allLeads
+                    const index = allLeads.findIndex(l => l.id === leadId);
+                    if (index !== -1) {
+                        allLeads[index] = updatedLead;
+                    }
+                    // Modal bleibt offen, aktualisiere nur die Anzeige
+                    closeLeadDetail();
+                    openLeadDetail(leadId);
+                } else {
+                    const error = await response.json().catch(() => ({ detail: 'Fehler beim Speichern' }));
+                    alert('Fehler beim Speichern: ' + (error.detail || 'Unbekannter Fehler'));
+                }
+            } catch (error) {
+                console.error('Fehler beim Speichern:', error);
+                alert('Fehler beim Speichern: ' + error.message);
+            }
+        }
+
+        async function reklamiereLead(leadId) {
+            if (!confirm('Möchten Sie diesen Lead wirklich reklamieren? Der Lead wird aus Ihrer Liste entfernt und nicht mehr in den Statistiken gezählt.')) return;
+            
+            try {
+                const response = await authFetch(`${API_BASE}/leads/${leadId}/reklamieren`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+                
+                if (response.ok) {
+                    // Entferne Lead aus allLeads
+                    allLeads = allLeads.filter(l => l.id !== leadId);
+                    closeLeadDetail();
+                    renderLeads();
+                } else {
+                    const error = await response.json().catch(() => ({ detail: 'Fehler beim Reklamieren' }));
+                    alert('Fehler beim Reklamieren: ' + (error.detail || 'Unbekannter Fehler'));
+                }
+            } catch (error) {
+                console.error('Fehler beim Reklamieren:', error);
+                alert('Fehler beim Reklamieren: ' + error.message);
+            }
+        }
+    </script>
+</head>
+<body>
+    <div class="min-h-screen">
+        <!-- Navigation -->
+        <nav class="bg-white/95 backdrop-blur-xl border-b border-gray-200/60 sticky top-0 z-50" style="box-shadow: 0 1px 0 rgba(0,0,0,0.05);">
+            <div class="max-w-7xl mx-auto px-8">
+                <div class="flex justify-between items-center h-16">
+                    <div class="flex items-center">
+                        <img src="https://leadgate.info/wp-content/uploads/2025/11/cropped-ChatGPT-Image-12.-Nov.-2025-00_37_51-1.png" 
+                             alt="GateLink" 
+                             class="h-8 w-auto mr-3"
+                             onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                        <span class="text-xl font-semibold text-[#1d1d1f]" style="display: none; letter-spacing: -0.01em;">GateLink</span>
+                    </div>
+                    <div class="flex items-center space-x-4">
+                        <button onclick="toggleChat()" class="relative px-4 py-2 text-sm font-medium text-[#86868b] hover:text-[#1d1d1f] rounded-full transition-smooth" style="font-weight: 400;">
+                            Chat
+                            <span id="chat-badge" class="hidden absolute -top-1 -right-1 bg-[#0071e3] text-white text-xs rounded-full h-5 w-5 flex items-center justify-center font-medium" style="font-weight: 600;">!</span>
+                        </button>
+                        <span class="text-sm text-[#86868b]" id="makler-name" style="font-weight: 400;">Makler</span>
+                        <button onclick="logout()" class="px-4 py-2 text-sm font-medium text-[#86868b] hover:text-[#1d1d1f] rounded-full transition-smooth" style="font-weight: 400;">
+                            Abmelden
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="max-w-7xl mx-auto py-12 px-8">
+            <!-- Header -->
+            <div class="mb-12 flex items-center justify-between">
+                <div>
+                    <h1 class="text-4xl font-semibold text-[#1d1d1f] mb-2" id="main-title" style="letter-spacing: -0.02em; font-weight: 600;">Neue Anfragen</h1>
+                    <p class="text-base text-[#86868b]" id="header-description" style="font-weight: 400;">Qualifizierte Leads</p>
+                    <!-- Credits-Anzeige (nur für Makler mit Credits-System) -->
+                    <div id="credits-header-section" class="hidden mt-4">
+                        <div class="flex items-center gap-4 p-4 bg-blue-50 rounded-xl border border-blue-200">
+                            <div class="flex-1">
+                                <div class="text-xs text-gray-600 mb-1">Credits-Stand</div>
+                                <div id="credits-stand-header" class="text-xl font-bold text-[#0071e3]">Lade...</div>
+                            </div>
+                            <div class="flex gap-2">
+                                <button onclick="openGatelinkRueckzahlungModal()" class="px-4 py-2 text-sm font-semibold text-gray-700 bg-white border border-gray-300 rounded-xl hover:bg-gray-50 transition-smooth">
+                                    Rückzahlung
+                                </button>
+                                <button onclick="openGatelinkCreditsModal()" class="px-4 py-2 text-sm font-semibold text-white bg-[#0071e3] rounded-xl hover:bg-[#0071e3]/90 transition-smooth">
+                                    Credits aufladen
+                                </button>
+                            </div>
+                        </div>
+                        <div id="credits-warnung-header" class="hidden mt-2 p-3 bg-yellow-50 border border-yellow-200 rounded-xl">
+                            <div class="flex items-center gap-2 text-yellow-800">
+                                <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                                    <path fill-rule="evenodd" d="M8.257 3.099c.765-1.36 2.722-1.36 3.486 0l5.58 9.92c.75 1.334-.213 2.98-1.742 2.98H4.42c-1.53 0-2.493-1.646-1.743-2.98l5.58-9.92zM11 13a1 1 0 11-2 0 1 1 0 012 0zm-1-8a1 1 0 00-1 1v3a1 1 0 002 0V6a1 1 0 00-1-1z" clip-rule="evenodd"/>
+                                </svg>
+                                <span class="text-sm font-semibold">Niedriger Credits-Stand!</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <!-- View Toggle & Filter -->
+                <div class="flex items-center gap-3">
+                    <div class="flex items-center gap-1 bg-gray-100/80 rounded-xl p-1">
+                        <button id="view-list" onclick="switchView('list')" class="px-4 py-2 text-sm font-medium rounded-lg transition-smooth view-btn active" style="font-weight: 500;">Liste</button>
+                        <button id="view-kanban" onclick="switchView('kanban')" class="px-4 py-2 text-sm font-medium rounded-lg transition-smooth view-btn" style="font-weight: 400;">Kanban</button>
+                        <button id="view-calendar" onclick="switchView('calendar')" class="px-4 py-2 text-sm font-medium rounded-lg transition-smooth view-btn" style="font-weight: 400;">Kalender</button>
+                        <button id="view-stats" onclick="switchView('stats')" class="px-4 py-2 text-sm font-medium rounded-lg transition-smooth view-btn" style="font-weight: 400;">Statistik</button>
+                    </div>
+                    <button id="filter-toggle" onclick="toggleFilter()" class="px-4 py-2 text-sm font-medium text-[#86868b] hover:text-[#1d1d1f] border border-gray-300 rounded-xl hover:bg-gray-50/80 transition-smooth" style="font-weight: 500;">
+                        Filter
+                    </button>
+                </div>
+            </div>
+
+            <!-- Ausklappbarer Filter -->
+            <div id="filter-panel" class="hidden mb-8 bg-white border border-gray-200/50 rounded-2xl p-6" style="box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                <div class="space-y-4">
+                    <!-- Jahr & Monat Filter -->
+                    <div>
+                        <div class="text-sm font-medium text-gray-700 mb-3">Zeitraum-Filter</div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div>
+                                <label class="block text-xs text-gray-600 mb-2">Jahr</label>
+                                <input type="number" id="filter-jahr" onchange="applyFilters()" placeholder="z.B. 2026" min="2000" max="2100" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white text-[#1d1d1f] focus:outline-none focus:ring-2 focus:ring-[#0071e3] focus:border-transparent" value="">
+                            </div>
+                            <div>
+                                <label class="block text-xs text-gray-600 mb-2">Monat</label>
+                                <select id="filter-monat" onchange="applyFilters()" class="w-full px-3 py-2 text-sm border border-gray-200 rounded-xl bg-white text-[#1d1d1f] focus:outline-none focus:ring-2 focus:ring-[#0071e3] focus:border-transparent">
+                                    <option value="">Alle Monate</option>
+                                    <option value="1">Januar</option>
+                                    <option value="2">Februar</option>
+                                    <option value="3">März</option>
+                                    <option value="4">April</option>
+                                    <option value="5">Mai</option>
+                                    <option value="6">Juni</option>
+                                    <option value="7">Juli</option>
+                                    <option value="8">August</option>
+                                    <option value="9">September</option>
+                                    <option value="10">Oktober</option>
+                                    <option value="11">November</option>
+                                    <option value="12">Dezember</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="text-sm font-medium text-gray-700 mb-3">Status-Filter</div>
+                        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" id="filter-kein_status" onchange="applyFilters()" class="w-4 h-4 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                <span class="text-sm text-[#1d1d1f]">Unkontaktiert</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" id="filter-in_gespraechen" onchange="applyFilters()" class="w-4 h-4 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                <span class="text-sm text-[#1d1d1f]">In Bearbeitung</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" id="filter-termin_vereinbart" onchange="applyFilters()" class="w-4 h-4 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                <span class="text-sm text-[#1d1d1f]">Termin vereinbart</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" id="filter-zweit_termin_vereinbart" onchange="applyFilters()" class="w-4 h-4 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                <span class="text-sm text-[#1d1d1f]">Zweittermin vereinbart</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" id="filter-maklervertrag_unterschrieben" onchange="applyFilters()" class="w-4 h-4 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                <span class="text-sm text-[#1d1d1f]">Maklervertrag unterschrieben</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" id="filter-immobilie_verkauft" onchange="applyFilters()" class="w-4 h-4 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                <span class="text-sm text-[#1d1d1f]">Immobilie verkauft</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer">
+                                <input type="checkbox" id="filter-absage" onchange="applyFilters()" class="w-4 h-4 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                                <span class="text-sm text-[#1d1d1f]">Absage</span>
+                            </label>
+                        </div>
+                    </div>
+                    <div>
+                        <div class="text-sm font-medium text-gray-700 mb-3">Weitere Filter</div>
+                        <div class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" id="filter-favoriten" onchange="applyFilters()" class="w-4 h-4 text-[#0071e3] border-gray-200 rounded focus:ring-[#0071e3]">
+                            <span class="text-sm text-[#1d1d1f]">⭐ Nur Favoriten anzeigen</span>
+                        </div>
+                    </div>
+                    <div class="relative">
+                        <input type="text" id="search-leads" onkeyup="applyFilters()" placeholder="Suchen..." class="block w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-xl bg-white text-[#1d1d1f] focus:outline-none focus:ring-1 focus:ring-gray-400">
+                        <div class="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                            <svg class="h-4 w-4 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                            </svg>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Leads-Liste / Kanban / Kalender / Statistiken -->
+            <div id="leads-container" class="space-y-3">
+                <div class="bg-white border border-gray-200 rounded-xl p-12 text-center">
+                    <p class="text-gray-500">Lade Leads...</p>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <!-- Apple-Style Chat Modal -->
+    <div id="chat-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center">
+        <div class="absolute inset-0 bg-black/30 backdrop-blur-sm" onclick="toggleChat()"></div>
+        <div class="relative bg-white w-full max-w-2xl h-[85vh] max-h-[800px] rounded-3xl shadow-2xl flex flex-col overflow-hidden" style="font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', system-ui, sans-serif;">
+            <!-- Header -->
+            <div class="px-6 py-4 border-b border-gray-100/50 flex items-center justify-between flex-shrink-0 bg-white/95 backdrop-blur-sm">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-full bg-white flex items-center justify-center flex-shrink-0 overflow-hidden border border-gray-200" id="gatelink-header-avatar" style="width: 40px; height: 40px; min-width: 40px; min-height: 40px; position: relative;">
+                        <img id="gatelink-logo-img" src="https://leadgate.info/wp-content/uploads/2025/11/cropped-ChatGPT-Image-12.-Nov.-2025-00_37_51-1.png" alt="LeadGate" style="width: 100%; height: 100%; object-fit: contain; object-position: center; display: block; border-radius: 50%; padding: 2px;">
+                    </div>
+                    <div class="flex-1 min-w-0">
+                        <h3 class="text-base font-semibold text-[#1d1d1f] truncate" style="font-weight: 600; letter-spacing: -0.01em;">LeadGate</h3>
+                        <p class="text-xs text-gray-500">Aktiv</p>
+                    </div>
+                </div>
+                <button onclick="toggleChat()" class="w-8 h-8 flex items-center justify-center text-gray-400 hover:text-[#1d1d1f] rounded-full hover:bg-gray-100 transition-all duration-200" style="transition: all 200ms ease-out;">
+                    <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12"></path>
+                    </svg>
+                </button>
+            </div>
+
+            <!-- Messages Container -->
+            <div id="chat-messages" class="flex-1 overflow-y-auto px-6 py-8 min-h-0" style="background-color: #f5f5f7; scrollbar-width: thin; scrollbar-color: rgba(0,0,0,0.1) transparent;">
+                <!-- Nachrichten werden hier eingefügt -->
+            </div>
+
+            <!-- Input Bar -->
+            <div class="px-6 py-4 bg-white border-t border-gray-100/50 flex-shrink-0">
+                <form id="chat-form" onsubmit="sendChatMessage(event)" class="flex gap-3 items-end">
+                    <div class="flex-1 bg-gray-100 rounded-3xl px-5 py-3 flex items-center gap-3 border border-transparent focus-within:border-gray-200 focus-within:bg-white transition-all duration-200" style="transition: all 200ms ease-out;">
+                        <input 
+                            type="text" 
+                            id="chat-input" 
+                            placeholder="Nachricht" 
+                            class="flex-1 bg-transparent border-0 focus:outline-none text-base text-[#1d1d1f] placeholder-gray-400" 
+                            style="font-size: 17px; line-height: 1.5;"
+                            required
+                            autocomplete="off"
+                        >
+                    </div>
+                    <button 
+                        type="submit" 
+                        class="w-11 h-11 bg-[#007AFF] text-white rounded-full hover:bg-[#0051D5] transition-all duration-200 flex items-center justify-center flex-shrink-0 shadow-sm" 
+                        style="transition: all 200ms ease-out;"
+                    >
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2.5">
+                            <path stroke-linecap="round" stroke-linejoin="round" d="M12 19l9 2-9-18-9 18 9-2zm0 0v-8"></path>
+                        </svg>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let chatMessages = [];
+        let chatInterval = null;
+        let isLoadingChatMessages = false; // Verhindere gleichzeitige Requests
+        let lastMessageId = null; // Track letzte Nachricht für Incremental Loading
+
+        function toggleChat() {
+            const modal = document.getElementById('chat-modal');
+            if (modal.classList.contains('hidden')) {
+                modal.classList.remove('hidden');
+                // Sanfte Animation beim Öffnen
+                modal.style.opacity = '0';
+                setTimeout(() => {
+                    modal.style.opacity = '1';
+                    modal.style.transition = 'opacity 200ms ease-out';
+                }, 10);
+                
+                loadChatMessages(false); // Vollständiges Laden beim Öffnen
+                // Starte Auto-Refresh (optimiert: längerer Intervall für bessere Performance)
+                if (chatInterval) clearInterval(chatInterval);
+                chatInterval = setInterval(() => loadChatMessages(true), 10000); // Alle 10 Sekunden, nur neue Nachrichten
+            } else {
+                // Sanfte Animation beim Schließen
+                modal.style.opacity = '0';
+                modal.style.transition = 'opacity 200ms ease-out';
+                setTimeout(() => {
+                    modal.classList.add('hidden');
+                }, 200);
+                
+                if (chatInterval) {
+                    clearInterval(chatInterval);
+                    chatInterval = null;
+                }
+                // Beim Schließen des Chats nochmal prüfen, um sicherzustellen dass der Badge aktuell ist
+                checkUnreadMessages();
+            }
+        }
+
+        async function loadChatMessages(incremental = false) {
+            if (isLoadingChatMessages) return; // Verhindere gleichzeitige Requests
+            isLoadingChatMessages = true;
+            try {
+                const response = await authFetch(`${API_BASE}/chat`);
+                if (response.ok) {
+                    const newMessages = await response.json();
+                    
+                    if (incremental && lastMessageId !== null) {
+                        // Nur neue Nachrichten hinzufügen
+                        const existingIds = new Set(chatMessages.map(m => m.id));
+                        const newOnes = newMessages.filter(m => !existingIds.has(m.id));
+                        if (newOnes.length > 0) {
+                            chatMessages.push(...newOnes);
+                            renderChatMessages();
+                        }
+                    } else {
+                        // Vollständiges Laden
+                        chatMessages = newMessages;
+                        renderChatMessages();
+                    }
+                    
+                    // Update lastMessageId
+                    if (chatMessages.length > 0) {
+                        const sorted = [...chatMessages].sort((a, b) => new Date(b.erstellt_am) - new Date(a.erstellt_am));
+                        lastMessageId = sorted[0].id;
+                    }
+                    
+                    // Nach dem Laden der Nachrichten (die dabei als gelesen markiert wurden) den Badge aktualisieren
+                    updateUnreadBadge();
+                } else {
+                    console.error('Fehler beim Laden der Chat-Nachrichten:', response.status, response.statusText);
+                }
+            } catch (error) {
+                console.error('Fehler beim Laden der Chat-Nachrichten:', error);
+            } finally {
+                isLoadingChatMessages = false;
+            }
+        }
+        
+        // Aktualisiere den Badge basierend auf den bereits geladenen Nachrichten
+        function updateUnreadBadge() {
+            const unread = chatMessages.filter(m => !m.gelesen && m.from_user_id !== null);
+            const badge = document.getElementById('chat-badge');
+            if (badge) {
+                if (unread.length > 0) {
+                    badge.classList.remove('hidden');
+                    badge.textContent = unread.length > 9 ? '9+' : unread.length;
+                } else {
+                    badge.classList.add('hidden');
+                }
+            }
+        }
+
+        // Funktion zur Generierung einer konsistenten Farbe basierend auf einer ID
+        function getColorForId(id) {
+            const colors = [
+                '#FF6B6B', '#4ECDC4', '#45B7D1', '#FFA07A', '#98D8C8',
+                '#F7DC6F', '#BB8FCE', '#85C1E2', '#F8B739', '#52BE80',
+                '#EC7063', '#5DADE2', '#58D68D', '#F4D03F', '#AF7AC5',
+                '#85C1E9', '#F1948A', '#73C6B6', '#F9E79F', '#D7BDE2'
+            ];
+            return colors[id % colors.length];
+        }
+
+        // Funktion zur Generierung von Initialen aus einem Namen
+        function getInitials(name) {
+            if (!name) return '?';
+            const words = name.trim().split(/\s+/);
+            if (words.length >= 2) {
+                return (words[0][0] + words[1][0]).toUpperCase();
+            }
+            return name.substring(0, 2).toUpperCase();
+        }
+
+        function renderChatMessages() {
+            const container = document.getElementById('chat-messages');
+            if (!container) return;
+            
+            if (chatMessages.length === 0) {
+                container.innerHTML = '<div class="text-center text-gray-400 py-12"><div class="text-sm" style="font-size: 15px;">Keine Nachrichten. Schreiben Sie die erste Nachricht.</div></div>';
+                return;
+            }
+            
+            // Sortiere nach Datum (älteste zuerst)
+            const sorted = [...chatMessages].sort((a, b) => new Date(a.erstellt_am) - new Date(b.erstellt_am));
+            
+            // Lade aktuelle Makler-ID für Vergleich
+            let currentMaklerId = null;
+            try {
+                const maklerData = localStorage.getItem('gatelink_makler');
+                if (maklerData) {
+                    const makler = JSON.parse(maklerData);
+                    currentMaklerId = makler.id;
+                }
+            } catch (e) {
+                console.error('Fehler beim Laden der Makler-ID:', e);
+            }
+            
+            // Gruppiere Nachrichten nach Datum
+            let lastDate = null;
+            const logoUrl = 'https://leadgate.info/wp-content/uploads/2025/11/cropped-ChatGPT-Image-12.-Nov.-2025-00_37_51-1.png';
+            
+            container.innerHTML = sorted.map((msg, index) => {
+                const date = new Date(msg.erstellt_am);
+                const isFromMe = msg.from_makler_id === currentMaklerId;
+                
+                // Prüfe ob neuer Tag
+                const msgDate = date.toLocaleDateString('de-DE');
+                const showDateSeparator = lastDate !== msgDate;
+                lastDate = msgDate;
+                
+                // Prüfe ob neue Nachricht vom gleichen Absender (innerhalb 5 Minuten)
+                const prevMsg = index > 0 ? sorted[index - 1] : null;
+                const showSender = !prevMsg || 
+                    (prevMsg.from_makler_id !== msg.from_makler_id && prevMsg.from_user_id !== msg.from_user_id) ||
+                    (new Date(msg.erstellt_am) - new Date(prevMsg.erstellt_am)) > 300000; // 5 Minuten
+                
+                const timeStr = date.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
+                const dateStr = date.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' });
+                
+                let html = '';
+                
+                // Datum-Trenner (sehr dezent, Apple-Stil)
+                if (showDateSeparator) {
+                    html += `<div class="flex justify-center my-10">
+                        <span class="px-4 py-1.5 rounded-full text-xs text-gray-400" style="font-size: 13px; font-weight: 400; background-color: rgba(255,255,255,0.8);">${dateStr}</span>
+                    </div>`;
+                }
+                
+                // Nachricht im Apple-Stil - viel Abstand zwischen Nachrichten
+                // Für Makler: farbiges Avatar, für User: LeadGate Logo
+                let avatarHtml = '';
+                if (!isFromMe && showSender) {
+                    // Im GateLink sind alle Nachrichten von LeadGate (User), daher immer Logo
+                    avatarHtml = `<div class="w-6 h-6 rounded-full bg-white flex items-center justify-center flex-shrink-0 mb-1 overflow-hidden border border-gray-200" style="width: 24px; height: 24px; min-width: 24px; min-height: 24px; position: relative;">
+                        <img src="${logoUrl}" alt="LeadGate" style="width: 100%; height: 100%; object-fit: contain; object-position: center; display: block; border-radius: 50%; padding: 1px;" onerror="this.style.display='none'; this.parentElement.innerHTML='<span style=\\'font-size: 10px; color: #1d1d1f; font-weight: 600;\\'>LG</span>';">
+                    </div>`;
+                } else if (!isFromMe) {
+                    avatarHtml = '<div class="w-6 flex-shrink-0"></div>';
+                }
+                
+                html += `<div class="flex ${isFromMe ? 'justify-end' : 'justify-start'} mb-4 group" style="animation: fadeIn 200ms ease-out;">
+                    <div class="flex items-end gap-2.5 max-w-[70%] ${isFromMe ? 'flex-row-reverse' : 'flex-row'}">
+                        ${avatarHtml}
+                        <div class="flex flex-col ${isFromMe ? 'items-end' : 'items-start'}">
+                            ${!isFromMe && showSender ? `
+                            <span class="text-xs text-gray-400 mb-1.5 px-1" style="font-size: 12px; font-weight: 400;">${escapeHtml(msg.from_user_username || 'LeadGate')}</span>
+                            ` : ''}
+                            <div class="${isFromMe ? 'bg-[#007AFF] text-white rounded-3xl rounded-tr-sm' : 'bg-white text-[#1d1d1f] rounded-3xl rounded-tl-sm'} px-4 py-3 shadow-sm" style="box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+                                <div class="text-base whitespace-pre-wrap break-words leading-relaxed" style="font-size: 17px; line-height: 1.5; font-weight: 400;">${escapeHtml(msg.nachricht)}</div>
+                                <div class="text-xs ${isFromMe ? 'text-white/70' : 'text-gray-400'} mt-1.5 flex items-center justify-end gap-1" style="font-size: 12px; font-weight: 400;">
+                                    <span>${timeStr}</span>
+                                    ${isFromMe ? '<svg class="w-3 h-3 opacity-70" fill="currentColor" viewBox="0 0 20 20"><path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"></path></svg>' : ''}
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>`;
+                
+                return html;
+            }).join('');
+            
+            // Scroll nach unten mit sanfter Animation
+            setTimeout(() => {
+                container.scrollTo({
+                    top: container.scrollHeight,
+                    behavior: 'smooth'
+                });
+            }, 50);
+        }
+
+        async function sendChatMessage(event) {
+            event.preventDefault();
+            const input = document.getElementById('chat-input');
+            const message = input.value.trim();
+            
+            if (!message) return;
+            
+            // Optimistic Update: Nachricht sofort anzeigen
+            const tempMessage = {
+                id: 'temp-' + Date.now(),
+                nachricht: message,
+                from_makler_id: null,
+                from_user_id: null,
+                erstellt_am: new Date().toISOString(),
+                gelesen: false
+            };
+            
+            try {
+                const maklerData = localStorage.getItem('gatelink_makler');
+                if (maklerData) {
+                    const makler = JSON.parse(maklerData);
+                    tempMessage.from_makler_id = makler.id;
+                }
+            } catch (e) {
+                console.error('Fehler beim Laden der Makler-ID:', e);
+            }
+            
+            chatMessages.push(tempMessage);
+            input.value = '';
+            renderChatMessages();
+            
+            try {
+                // Makler senden an LeadGate (kein to_user_id oder to_makler_id nötig)
+                const response = await authFetch(`${API_BASE}/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ nachricht: message })
+                });
+                
+                if (response.ok) {
+                    // Lade Nachrichten neu, um echte ID zu bekommen
+                    await loadChatMessages();
+                } else {
+                    // Entferne temporäre Nachricht bei Fehler
+                    chatMessages = chatMessages.filter(m => m.id !== tempMessage.id);
+                    renderChatMessages();
+                    
+                    const error = await response.json().catch(() => ({ detail: 'Nicht zugestellt' }));
+                    // Dezente Fehlermeldung
+                    const errorDiv = document.createElement('div');
+                    errorDiv.className = 'fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-[#1d1d1f] text-white px-4 py-2.5 rounded-xl text-sm z-50';
+                    errorDiv.textContent = error.detail || 'Nicht zugestellt';
+                    errorDiv.style.fontSize = '14px';
+                    errorDiv.style.fontWeight = '400';
+                    document.body.appendChild(errorDiv);
+                    setTimeout(() => {
+                        errorDiv.style.opacity = '0';
+                        errorDiv.style.transition = 'opacity 200ms ease-out';
+                        setTimeout(() => errorDiv.remove(), 200);
+                    }, 3000);
+                }
+            } catch (error) {
+                console.error('Fehler beim Senden:', error);
+                // Entferne temporäre Nachricht bei Fehler
+                chatMessages = chatMessages.filter(m => m.id !== tempMessage.id);
+                renderChatMessages();
+                
+                // Dezente Fehlermeldung
+                const errorDiv = document.createElement('div');
+                errorDiv.className = 'fixed bottom-6 left-1/2 transform -translate-x-1/2 bg-[#1d1d1f] text-white px-4 py-2.5 rounded-xl text-sm z-50';
+                errorDiv.textContent = 'Konnte nicht gesendet werden';
+                errorDiv.style.fontSize = '14px';
+                errorDiv.style.fontWeight = '400';
+                document.body.appendChild(errorDiv);
+                setTimeout(() => {
+                    errorDiv.style.opacity = '0';
+                    errorDiv.style.transition = 'opacity 200ms ease-out';
+                    setTimeout(() => errorDiv.remove(), 200);
+                }, 3000);
+            }
+        }
+
+        // ========== Credits-System Funktionen für GateLink ==========
+        
+        async function openGatelinkCreditsModal() {
+            // Lade Preis pro Lead
+            let preisProLead = 100; // Default
+            try {
+                const preisResponse = await authFetch(`${API_BASE}/credits/preis-pro-lead`);
+                if (preisResponse.ok) {
+                    const preisData = await preisResponse.json();
+                    preisProLead = preisData.preis_pro_lead;
+                }
+            } catch (error) {
+                console.error('Fehler beim Laden des Lead-Preises:', error);
+            }
+            
+            // Erstelle Modal mit Paketen
+            const modal = document.createElement('div');
+            modal.id = 'gatelink-credits-paket-modal';
+            modal.className = 'fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center';
+            modal.innerHTML = `
+                <div class="bg-white rounded-2xl p-8 max-w-md w-full mx-4">
+                    <h3 class="text-2xl font-semibold text-[#1d1d1f] mb-4">Credits aufladen</h3>
+                    <p class="text-sm text-gray-600 mb-6">Aktueller Preis pro Lead: <span class="font-semibold">${preisProLead.toFixed(2)} €</span></p>
+                    
+                    <div class="space-y-3 mb-6">
+                        ${(() => {
+                            const berechneBrutto = (netto) => (netto * 1.19) + 0.30;  // MwSt + 30 Cent
+                            const berechneMwst = (netto) => netto * 0.19;
+                            const transaktionsgebuehr = 0.30;
+                            const pakete = [
+                                { anzahl: 5, netto: 5 * preisProLead },
+                                { anzahl: 10, netto: 10 * preisProLead },
+                                { anzahl: 15, netto: 15 * preisProLead },
+                                { anzahl: 20, netto: 20 * preisProLead }
+                            ];
+                            return pakete.map(p => {
+                                const brutto = berechneBrutto(p.netto);
+                                const mwst = berechneMwst(p.netto);
+                                return `
+                                    <button onclick="selectGatelinkPaket(${p.anzahl}, ${preisProLead})" class="w-full px-4 py-3 text-left border-2 border-gray-200 rounded-xl hover:border-[#0071e3] hover:bg-blue-50 transition-smooth">
+                                        <div class="flex justify-between items-center">
+                                            <div>
+                                                <span class="font-semibold">${p.anzahl} Leads</span>
+                                                <div class="text-xs text-gray-500 mt-1">Netto: ${p.netto.toFixed(2)} € + MwSt: ${mwst.toFixed(2)} € + Gebühr: ${transaktionsgebuehr.toFixed(2)} €</div>
+                                            </div>
+                                            <div class="text-right">
+                                                <span class="text-[#0071e3] font-bold">${brutto.toFixed(2)} €</span>
+                                                <div class="text-xs text-gray-500">inkl. MwSt + Gebühr</div>
+                                            </div>
+                                        </div>
+                                    </button>
+                                `;
+                            }).join('');
+                        })()}
+                    </div>
+                    
+                    <div class="border-t pt-4">
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Individueller Betrag (Netto, ohne MwSt)</label>
+                        <div class="flex gap-2">
+                            <input type="number" id="gatelink-individueller-betrag" placeholder="Netto-Betrag in €" min="1" step="0.01" class="flex-1 px-4 py-2 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-[#0071e3]">
+                            <button onclick="selectGatelinkIndividuell(${preisProLead})" class="px-6 py-2 text-sm font-semibold text-white bg-[#0071e3] rounded-xl hover:bg-[#0071e3]/90">
+                                OK
+                            </button>
+                        </div>
+                        <div id="gatelink-individueller-betrag-info" class="text-xs text-gray-500 mt-2 hidden">
+                            <div>MwSt (19%): <span id="gatelink-mwst-betrag">0.00</span> €</div>
+                            <div>Transaktionsgebühr: <span id="gatelink-transaktionsgebuehr">0.30</span> €</div>
+                            <div>Gesamtbetrag (Brutto): <span id="gatelink-brutto-betrag" class="font-semibold">0.00</span> €</div>
+                        </div>
+                    </div>
+                    
+                    <div class="mt-6 flex gap-3">
+                        <button onclick="closeGatelinkCreditsPaketModal()" class="flex-1 px-4 py-3 text-sm font-semibold text-gray-700 bg-gray-100 rounded-xl hover:bg-gray-200">
+                            Abbrechen
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            // Initialisiere MwSt-Anzeige für individuellen Betrag
+            setTimeout(initGatelinkMwstAnzeige, 100);
+        }
+
+        function selectGatelinkPaket(anzahlLeads, preisProLead) {
+            const betrag = anzahlLeads * preisProLead;
+            const beschreibung = `Credits-Aufladung für ${anzahlLeads} Leads`;
+            closeGatelinkCreditsPaketModal();
+            processGatelinkPayment(betrag, beschreibung);
+        }
+
+        async function selectGatelinkIndividuell(preisProLead) {
+            const input = document.getElementById('gatelink-individueller-betrag');
+            const betragNetto = parseFloat(input.value);
+            
+            if (!betragNetto || isNaN(betragNetto) || betragNetto <= 0) {
+                alert('Bitte geben Sie einen gültigen Betrag ein');
+                return;
+            }
+            
+            const anzahlLeads = Math.floor(betragNetto / preisProLead);
+            const beschreibung = anzahlLeads > 0 
+                ? `Credits-Aufladung für ${anzahlLeads} Leads (Netto: ${betragNetto.toFixed(2)} €)`
+                : `Credits-Aufladung (Netto: ${betragNetto.toFixed(2)} €)`;
+            
+            closeGatelinkCreditsPaketModal();
+            processGatelinkPayment(betragNetto, beschreibung);
+        }
+
+        async function processGatelinkPayment(betragNetto, beschreibung) {
+            // Prüfe ob Stripe verfügbar ist
+            try {
+                const stripeConfig = await authFetch('/api/stripe/config');
+                if (stripeConfig.ok) {
+                    const config = await stripeConfig.json();
+                    if (config.enabled) {
+                        // Stripe-Zahlung (betragNetto wird als Credits gutgeschrieben, MwSt wird automatisch hinzugefügt)
+                        await startGatelinkStripePayment(betragNetto, beschreibung);
+                        return;
+                    }
+                }
+            } catch (error) {
+                console.error('Fehler beim Prüfen der Stripe-Konfiguration:', error);
+            }
+            
+            alert('Online-Zahlung ist derzeit nicht verfügbar. Bitte kontaktieren Sie LeadGate für eine manuelle Aufladung.');
+        }
+        
+        // Event Listener für MwSt-Anzeige bei individuellem Betrag
+        // Wird beim Öffnen des Modals initialisiert
+        function initGatelinkMwstAnzeige() {
+            const input = document.getElementById('gatelink-individueller-betrag');
+            if (input) {
+                // Entferne alte Event Listener
+                const newInput = input.cloneNode(true);
+                input.parentNode.replaceChild(newInput, input);
+                
+                newInput.addEventListener('input', function() {
+                    const betragNetto = parseFloat(this.value) || 0;
+                    const infoDiv = document.getElementById('gatelink-individueller-betrag-info');
+                    const mwstSpan = document.getElementById('gatelink-mwst-betrag');
+                    const gebuehrSpan = document.getElementById('gatelink-transaktionsgebuehr');
+                    const bruttoSpan = document.getElementById('gatelink-brutto-betrag');
+                    
+                    if (betragNetto > 0 && infoDiv && mwstSpan && gebuehrSpan && bruttoSpan) {
+                        const mwst = betragNetto * 0.19;
+                        const transaktionsgebuehr = 0.30;
+                        const brutto = betragNetto + mwst + transaktionsgebuehr;
+                        mwstSpan.textContent = mwst.toFixed(2);
+                        gebuehrSpan.textContent = transaktionsgebuehr.toFixed(2);
+                        bruttoSpan.textContent = brutto.toFixed(2);
+                        infoDiv.classList.remove('hidden');
+                    } else if (infoDiv) {
+                        infoDiv.classList.add('hidden');
+                    }
+                });
+            }
+        }
+
+        function closeGatelinkCreditsPaketModal() {
+            const modal = document.getElementById('gatelink-credits-paket-modal');
+            if (modal) {
+                modal.remove();
+            }
+        }
+
+        async function openGatelinkRueckzahlungModal() {
+            try {
+                // 2 Monate = Standard (Credits müssen 2 Monate alt sein)
+                const response = await authFetch(`${API_BASE}/credits/rueckzahlbar?monate=2`);
+                if (!response.ok) {
+                    alert('Fehler beim Laden der rückzahlbaren Credits');
+                    return;
+                }
+                
+                const rueckzahlbare = await response.json();
+                
+                if (rueckzahlbare.length === 0) {
+                    alert('Derzeit sind keine Credits für Rückzahlung verfügbar.\n\nCredits können zurückgezahlt werden, wenn sie älter als 2 Monate sind und noch nicht für Leads verwendet wurden.');
+                    return;
+                }
+                
+                const gesamtbetrag = rueckzahlbare.reduce((sum, r) => sum + r.betrag, 0);
+                
+                const modal = document.createElement('div');
+                modal.id = 'gatelink-rueckzahlung-modal';
+                modal.className = 'fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center';
+                modal.innerHTML = `
+                    <div class="bg-white rounded-2xl p-8 max-w-2xl w-full mx-4 max-h-[80vh] overflow-y-auto">
+                        <h3 class="text-2xl font-semibold text-[#1d1d1f] mb-4">Credits-Rückzahlung beantragen</h3>
+                        <p class="text-sm text-gray-600 mb-6">
+                            Sie können Credits zurückerhalten, die älter als 2 Monate sind und noch nicht für Leads verwendet wurden.
+                            <br><strong>Gesamtbetrag rückzahlbar: ${gesamtbetrag.toFixed(2)} €</strong>
+                        </p>
+                        
+                        <div class="space-y-3 mb-6">
+                            ${rueckzahlbare.map(r => {
+                                const date = new Date(r.erstellt_am);
+                                const dateStr = date.toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                                return `
+                                    <div class="p-4 border-2 border-gray-200 rounded-xl">
+                                        <div class="flex justify-between items-start mb-2">
+                                            <div class="flex-1">
+                                                <div class="font-semibold text-[#1d1d1f]">${r.betrag.toFixed(2)} €</div>
+                                                <div class="text-sm text-gray-600 mt-1">${r.beschreibung}</div>
+                                                <div class="text-xs text-gray-500 mt-1">Aufladung am ${dateStr} (${r.tage_alt} Tage alt)</div>
+                                            </div>
+                                            <button onclick="stelleRueckzahlungAnfrage(${r.transaktion_id}, ${r.betrag})" class="ml-4 px-4 py-2 text-sm font-semibold text-white bg-[#0071e3] rounded-xl hover:bg-[#0071e3]/90">
+                                                Anfrage stellen
+                                            </button>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                        
+                        <div class="bg-blue-50 border border-blue-200 rounded-xl p-4 mb-6">
+                            <p class="text-sm text-blue-800">
+                                <strong>Hinweis:</strong> Ihre Anfrage wird automatisch an LeadGate gesendet. 
+                                Sie erhalten eine Antwort im Chat.
+                            </p>
+                            <p class="text-sm text-blue-800 mt-2">
+                                <strong>Wichtig:</strong> Bei Stripe-Zahlungen werden die Stripe-Gebühren (2.9% + 30 Cent) vom Rückzahlungsbetrag abgezogen.
+                            </p>
+                        </div>
+                        
+                        <div class="flex gap-3">
+                            <button onclick="closeGatelinkRueckzahlungModal()" class="flex-1 px-4 py-3 text-sm font-semibold text-gray-700 bg-gray-100 rounded-xl hover:bg-gray-200">
+                                Schließen
+                            </button>
+                        </div>
+                    </div>
+                `;
+                document.body.appendChild(modal);
+            } catch (error) {
+                console.error('Fehler beim Laden der rückzahlbaren Credits:', error);
+                alert('Fehler beim Laden der rückzahlbaren Credits');
+            }
+        }
+
+        function closeGatelinkRueckzahlungModal() {
+            const modal = document.getElementById('gatelink-rueckzahlung-modal');
+            if (modal) {
+                modal.remove();
+            }
+        }
+
+        async function stelleRueckzahlungAnfrage(transaktionId, betrag) {
+            const beschreibung = prompt(`Rückzahlungsanfrage für ${betrag.toFixed(2)} €\n\nOptional: Beschreibung/Begründung:`, '');
+            if (beschreibung === null) {
+                return; // Benutzer hat abgebrochen
+            }
+            
+            try {
+                const response = await authFetch(`${API_BASE}/credits/rueckzahlung/anfrage`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        transaktion_id: transaktionId,
+                        betrag: betrag,
+                        beschreibung: beschreibung || `Rückzahlungsanfrage für ${betrag.toFixed(2)} €`
+                    })
+                });
+                
+                if (response.ok) {
+                    alert('Rückzahlungsanfrage erfolgreich gestellt!\n\nIhre Anfrage wurde an LeadGate gesendet. Sie erhalten eine Antwort im Chat.');
+                    closeGatelinkRueckzahlungModal();
+                    await checkAndLoadCredits();
+                } else {
+                    const error = await response.json().catch(() => ({ detail: 'Unbekannter Fehler' }));
+                    alert(`Fehler: ${error.detail || 'Unbekannter Fehler'}`);
+                }
+            } catch (error) {
+                console.error('Fehler bei Rückzahlungsanfrage:', error);
+                alert('Fehler beim Stellen der Anfrage');
+            }
+        }
+        
+        async function checkAndLoadCredits() {
+            try {
+                console.log('=== checkAndLoadCredits aufgerufen ===');
+                console.log('API_BASE:', API_BASE);
+                console.log('URL:', `${API_BASE}/credits/stand`);
+                const response = await authFetch(`${API_BASE}/credits/stand`);
+                console.log('Credits-Response Status:', response.status, response.statusText);
+                
+                if (response.ok) {
+                    const stand = await response.json();
+                    console.log('Credits-Stand geladen:', stand);
+                    // Zeige Credits-Sektion
+                    const creditsSection = document.getElementById('credits-header-section');
+                    console.log('Credits-Sektion Element:', creditsSection);
+                    if (creditsSection) {
+                        creditsSection.classList.remove('hidden');
+                        console.log('Credits-Sektion angezeigt');
+                        const standElement = document.getElementById('credits-stand-header');
+                        if (standElement) {
+                            standElement.textContent = `${stand.aktueller_stand.toFixed(2)} €`;
+                        }
+                        
+                        // Warnung bei niedrigem Stand
+                        const warnungElement = document.getElementById('credits-warnung-header');
+                        if (warnungElement) {
+                            if (stand.aktueller_stand < 100) {
+                                warnungElement.classList.remove('hidden');
+                            } else {
+                                warnungElement.classList.add('hidden');
+                            }
+                        }
+                    } else {
+                        console.error('Credits-Sektion Element nicht gefunden!');
+                    }
+                } else {
+                    const errorText = await response.json().catch(async () => {
+                        const text = await response.text().catch(() => '');
+                        return { detail: text };
+                    });
+                    console.log('Credits-API Fehler:', response.status, errorText);
+                    if (response.status === 400) {
+                        // Makler verwendet nicht das Credits-System - verstecke Sektion
+                        console.log('Makler verwendet nicht das Credits-System (400)');
+                        const creditsSection = document.getElementById('credits-header-section');
+                        if (creditsSection) {
+                            creditsSection.classList.add('hidden');
+                        }
+                    } else {
+                        console.log('Unbekannter Fehler bei Credits-API');
+                    }
+                }
+            } catch (error) {
+                console.error('Fehler beim Laden des Credits-Stands:', error);
+                console.error('Error Details:', error.message, error.stack);
+                // Verstecke Credits-Sektion bei Fehler
+                const creditsSection = document.getElementById('credits-header-section');
+                if (creditsSection) {
+                    creditsSection.classList.add('hidden');
+                }
+            }
+        }
+
+        async function startGatelinkStripePayment(betrag, beschreibung) {
+            try {
+                const response = await authFetch(`${API_BASE}/credits/stripe/create-payment-intent`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        betrag: betrag,
+                        beschreibung: beschreibung || 'Credits-Aufladung'
+                    })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({ detail: 'Unbekannter Fehler' }));
+                    alert(`Fehler: ${error.detail || 'Unbekannter Fehler'}`);
+                    return;
+                }
+                
+                const paymentData = await response.json();
+                showGatelinkStripePaymentModal(paymentData, betrag);
+            } catch (error) {
+                console.error('Fehler beim Erstellen des Payment Intents:', error);
+                alert('Fehler beim Starten der Zahlung');
+            }
+        }
+
+        function showGatelinkStripePaymentModal(paymentData, betrag) {
+            const modal = document.createElement('div');
+            modal.id = 'gatelink-stripe-payment-modal';
+            modal.className = 'fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center';
+            modal.innerHTML = `
+                <div class="bg-white rounded-2xl p-8 max-w-md w-full mx-4">
+                    <h3 class="text-2xl font-semibold text-[#1d1d1f] mb-4">Zahlung abschließen</h3>
+                    <p class="text-sm text-gray-600 mb-6">Betrag: <span class="font-semibold">${betrag.toFixed(2)} €</span></p>
+                    <div id="gatelink-stripe-payment-element" class="mb-6"></div>
+                    <div class="flex gap-3">
+                        <button onclick="closeGatelinkStripePaymentModal()" class="flex-1 px-4 py-3 text-sm font-semibold text-gray-700 bg-gray-100 rounded-xl hover:bg-gray-200">
+                            Abbrechen
+                        </button>
+                        <button id="gatelink-stripe-submit-btn" onclick="submitGatelinkStripePayment()" class="flex-1 px-4 py-3 text-sm font-semibold text-white bg-[#0071e3] rounded-xl hover:bg-[#0071e3]/90">
+                            Bezahlen
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            
+            // Lade Stripe.js
+            if (typeof Stripe === 'undefined') {
+                const script = document.createElement('script');
+                script.src = 'https://js.stripe.com/v3/';
+                script.onload = () => initializeGatelinkStripePayment(paymentData);
+                document.head.appendChild(script);
+            } else {
+                initializeGatelinkStripePayment(paymentData);
+            }
+        }
+
+        let gatelinkStripeInstance = null;
+        let gatelinkPaymentElement = null;
+        let gatelinkElements = null;
+
+        function initializeGatelinkStripePayment(paymentData) {
+            if (!paymentData.publishable_key) {
+                alert('Stripe-Konfiguration fehlt');
+                closeGatelinkStripePaymentModal();
+                return;
+            }
+            
+            if (!paymentData.client_secret) {
+                alert('Client Secret fehlt');
+                closeGatelinkStripePaymentModal();
+                return;
+            }
+            
+            gatelinkStripeInstance = Stripe(paymentData.publishable_key);
+            
+            // Client Secret muss beim Erstellen der Elements-Gruppe übergeben werden
+            gatelinkElements = gatelinkStripeInstance.elements({
+                clientSecret: paymentData.client_secret
+            });
+            
+            gatelinkPaymentElement = gatelinkElements.create('payment');
+            
+            gatelinkPaymentElement.mount('#gatelink-stripe-payment-element');
+        }
+
+        async function submitGatelinkStripePayment() {
+            if (!gatelinkStripeInstance || !gatelinkElements || !gatelinkPaymentElement) {
+                alert('Stripe nicht initialisiert');
+                return;
+            }
+            
+            const submitBtn = document.getElementById('gatelink-stripe-submit-btn');
+            submitBtn.disabled = true;
+            submitBtn.textContent = 'Wird verarbeitet...';
+            
+            try {
+                const { error } = await gatelinkStripeInstance.confirmPayment({
+                    elements: gatelinkElements,
+                    confirmParams: {
+                        return_url: window.location.href
+                    },
+                    redirect: 'if_required'
+                });
+                
+                if (error) {
+                    alert(`Zahlungsfehler: ${error.message}`);
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = 'Bezahlen';
+                } else {
+                    alert('Zahlung erfolgreich! Credits wurden aufgeladen.');
+                    closeGatelinkStripePaymentModal();
+                    await checkAndLoadCredits();
+                }
+            } catch (error) {
+                console.error('Fehler bei Stripe-Zahlung:', error);
+                alert('Fehler bei der Zahlung');
+                submitBtn.disabled = false;
+                submitBtn.textContent = 'Bezahlen';
+            }
+        }
+
+        function closeGatelinkStripePaymentModal() {
+            const modal = document.getElementById('gatelink-stripe-payment-modal');
+            if (modal) {
+                if (gatelinkPaymentElement) {
+                    gatelinkPaymentElement.unmount();
+                    gatelinkPaymentElement = null;
+                }
+                gatelinkElements = null;
+                gatelinkStripeInstance = null;
+                modal.remove();
+            }
+        }
+
+        // Prüfe auf ungelesene Nachrichten beim Laden (ohne die Nachrichten zu markieren)
+        async function checkUnreadMessages() {
+            try {
+                // Verwende die bereits geladenen Nachrichten, wenn verfügbar
+                if (chatMessages && chatMessages.length > 0) {
+                    updateUnreadBadge();
+                } else {
+                    // Falls keine Nachrichten geladen sind, lade sie (wird als gelesen markiert)
+                    const response = await authFetch(`${API_BASE}/chat`);
+                    if (response.ok) {
+                        const messages = await response.json();
+                        chatMessages = messages;
+                        updateUnreadBadge();
+                    }
+                }
+            } catch (error) {
+                console.error('Fehler beim Prüfen ungelesener Nachrichten:', error);
+            }
+        }
+
+        // Prüfe alle 10 Sekunden auf neue Nachrichten (nur wenn Chat nicht offen ist)
+        // Wenn der Chat offen ist, wird der Badge durch loadChatMessages aktualisiert
+        let unreadCheckInterval = setInterval(checkUnreadMessages, 10000);
+        
+        // Initiale Prüfung
+        checkUnreadMessages();
+
+        async function startGatelinkStripePayment(betrag, beschreibung) {
+            try {
+                const response = await authFetch(`${API_BASE}/credits/stripe/create-payment-intent`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        betrag: betrag,
+                        beschreibung: beschreibung || 'Credits-Aufladung'
+                    })
+                });
+                
+                if (!response.ok) {
+                    const error = await response.json().catch(() => ({ detail: 'Unbekannter Fehler' }));
+                    alert(`Fehler: ${error.detail || 'Unbekannter Fehler'}`);
+                    return;
+                }
+                
+                const paymentData = await response.json();
+                showGatelinkStripePaymentModal(paymentData, betrag);
+            } catch (error) {
+                console.error('Fehler beim Erstellen des Payment Intents:', error);
+                alert('Fehler beim Starten der Zahlung');
+            }
+        }
+
+        function showGatelinkStripePaymentModal(paymentData, betrag) {
+            const modal = document.createElement('div');
+            modal.id = 'gatelink-stripe-payment-modal';
+            modal.className = 'fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center';
+            modal.innerHTML = `
+                <div class="bg-white rounded-2xl p-8 max-w-md w-full mx-4">
+                    <h3 class="text-2xl font-semibold text-[#1d1d1f] mb-4">Zahlung abschließen</h3>
+                    <p class="text-sm text-gray-600 mb-6">Betrag: <span class="font-semibold">${betrag.toFixed(2)} €</span></p>
+                    <div id="gatelink-stripe-payment-element" class="mb-6"></div>
+                    <div class="flex gap-3">
+                        <button onclick="closeGatelinkStripePaymentModal()" class="flex-1 px-4 py-3 text-sm font-semibold text-gray-700 bg-gray-100 rounded-xl hover:bg-gray-200">
+                            Abbrechen
+                        </button>
+                        <button id="gatelink-stripe-submit-btn" onclick="submitGatelinkStripePayment()" class="flex-1 px-4 py-3 text-sm font-semibold text-white bg-[#0071e3] rounded-xl hover:bg-[#0071e3]/90">
+                            Bezahlen
+                        </button>
+                    </div>
+                </div>
+            `;
+            document.body.appendChild(modal);
+            
+            // Lade Stripe.js
+            if (typeof Stripe === 'undefined') {
+                const script = document.createElement('script');
+                script.src = 'https://js.stripe.com/v3/';
+                script.onload = () => initializeGatelinkStripePayment(paymentData);
+                document.head.appendChild(script);
+            } else {
+                initializeGatelinkStripePayment(paymentData);
+            }
+        }
+    </script>
+</body>
+</html>
+

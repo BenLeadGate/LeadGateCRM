@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - LeadGate</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        * {
+            font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", system-ui, sans-serif;
+            -webkit-font-smoothing: antialiased;
+            -moz-osx-font-smoothing: grayscale;
+        }
+        html {
+            overflow-y: scroll;
+        }
+        body {
+            background-color: #fbfbfd;
+            color: #1d1d1f;
+        }
+        .transition-smooth {
+            transition: all 0.2s ease-out;
+        }
+        button:active {
+            transform: scale(0.98);
+        }
+    </style>
+</head>
+<body>
+    <div class="min-h-screen flex items-center justify-center px-6">
+        <div class="w-full max-w-md">
+            <!-- Logo -->
+            <div class="text-center mb-16">
+                <img src="https://leadgate.info/wp-content/uploads/2025/11/cropped-ChatGPT-Image-12.-Nov.-2025-00_37_51-1.png" 
+                     alt="LeadGate" 
+                     class="h-12 w-auto mx-auto mb-6"
+                     onerror="this.style.display='none'; this.nextElementSibling.style.display='block';">
+                <h1 class="text-4xl font-semibold text-[#1d1d1f] mb-2" style="letter-spacing: -0.02em;">LeadGate</h1>
+                <p class="text-[#86868b] text-base">CRM & Abrechnung</p>
+            </div>
+
+            <!-- Login Form -->
+            <div class="bg-white rounded-3xl border border-gray-200/50 overflow-hidden" style="box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+                <div class="p-10">
+                    <form onsubmit="return doLogin(event)" class="space-y-8">
+                        <div>
+                            <label class="block text-sm font-medium text-[#1d1d1f] mb-3" style="font-weight: 500;">Benutzername</label>
+                            <input type="text" id="username" required class="w-full px-4 py-3.5 border border-gray-300 rounded-xl bg-white text-[#1d1d1f] focus:outline-none focus:ring-2 focus:ring-[#0071e3]/30 focus:border-[#0071e3] transition-smooth" style="font-size: 17px;">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-[#1d1d1f] mb-3" style="font-weight: 500;">Passwort</label>
+                            <input type="password" id="password" required class="w-full px-4 py-3.5 border border-gray-300 rounded-xl bg-white text-[#1d1d1f] focus:outline-none focus:ring-2 focus:ring-[#0071e3]/30 focus:border-[#0071e3] transition-smooth" style="font-size: 17px;">
+                        </div>
+                        <div id="error" class="hidden text-sm text-red-600 bg-red-50/80 p-4 rounded-xl border border-red-100"></div>
+                        <button type="submit" class="w-full px-6 py-3.5 text-base font-semibold text-white bg-[#0071e3] rounded-xl hover:bg-[#0077ed] active:bg-[#0066cc] transition-smooth" style="font-weight: 600;">
+                            Anmelden
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Login Navigation - Unten links -->
+    <div class="fixed bottom-4 left-4 z-10">
+        <div class="flex items-center gap-2 text-xs text-[#86868b]">
+            <span>Benutzer</span>
+            <span class="text-[#86868b]/50">•</span>
+            <a href="/gatelink" class="text-[#0071e3] hover:text-[#0077ed] transition-colors hover:underline">
+                Makler Login
+            </a>
+        </div>
+    </div>
+
+    <script>
+        let isLoggingIn = false;
+        
+        async function doLogin(e) {
+            e.preventDefault();
+            e.stopPropagation();
+            
+            // Verhindere mehrfache Login-Versuche
+            if (isLoggingIn) {
+                console.log('Login bereits in Bearbeitung...');
+                return false;
+            }
+            
+            isLoggingIn = true;
+            
+            const errorDiv = document.getElementById('error');
+            const submitButton = document.querySelector('button[type="submit"]');
+            errorDiv.classList.add('hidden');
+            
+            // Button deaktivieren
+            if (submitButton) {
+                submitButton.disabled = true;
+                submitButton.textContent = 'Anmeldung läuft...';
+            }
+            
+            const username = document.getElementById('username').value.trim();
+            const password = document.getElementById('password').value;
+            
+            if (!username || !password) {
+                errorDiv.textContent = 'Bitte geben Sie Benutzername und Passwort ein';
+                errorDiv.classList.remove('hidden');
+                isLoggingIn = false;
+                if (submitButton) {
+                    submitButton.disabled = false;
+                    submitButton.textContent = 'Anmelden';
+                }
+                return false;
+            }
+            
+            const formData = new FormData();
+            formData.append('username', username);
+            formData.append('password', password);
+            
+            try {
+                // Timeout für den Request (10 Sekunden)
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 10000);
+                
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    body: formData,
+                    signal: controller.signal
+                });
+                
+                clearTimeout(timeoutId);
+                
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.access_token) {
+                        localStorage.setItem('access_token', data.access_token);
+                        
+                        // Prüfe Benutzer-Rolle für Uploader
+                        try {
+                            const userResponse = await fetch('/api/auth/me', {
+                                headers: { 'Authorization': `Bearer ${data.access_token}` }
+                            });
+                            if (userResponse.ok) {
+                                const user = await userResponse.json();
+                                // Uploader wird direkt zur Upload-Seite weitergeleitet
+                                if (user.role === 'uploader') {
+                                    window.location.replace('/upload.html');
+                                    return false;
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('Konnte Benutzer-Rolle nicht prüfen:', e);
+                        }
+                        
+                        // Standard-Weiterleitung für alle anderen Rollen
+                        window.location.replace('/index.html');
+                        return false;
+                    } else {
+                        errorDiv.textContent = 'Kein Token erhalten';
+                        errorDiv.classList.remove('hidden');
+                    }
+                } else {
+                    let errorText = 'Anmeldung fehlgeschlagen';
+                    try {
+                        const error = await response.json();
+                        errorText = error.detail || errorText;
+                    } catch (e) {
+                        errorText = `Fehler ${response.status}: ${response.statusText}`;
+                    }
+                    errorDiv.textContent = errorText;
+                    errorDiv.classList.remove('hidden');
+                }
+            } catch (err) {
+                let errorMessage = 'Anmeldung fehlgeschlagen';
+                if (err.name === 'AbortError') {
+                    errorMessage = 'Zeitüberschreitung - Server antwortet nicht. Bitte versuchen Sie es erneut.';
+                } else if (err.message.includes('Failed to fetch')) {
+                    errorMessage = 'Verbindungsfehler - Server nicht erreichbar. Bitte prüfen Sie, ob der Server läuft.';
+                } else {
+                    errorMessage = 'Fehler: ' + (err.message || 'Anmeldung fehlgeschlagen');
+                }
+                errorDiv.textContent = errorMessage;
+                errorDiv.classList.remove('hidden');
+            } finally {
+                isLoggingIn = false;
+                if (submitButton) {
+                    submitButton.disabled = false;
+                    submitButton.textContent = 'Anmelden';
+                }
+            }
+            
+            return false;
+        }
+    </script>
+</body>
+</html>

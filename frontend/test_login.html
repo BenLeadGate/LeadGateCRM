@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Login Test</title>
+</head>
+<body>
+    <h1>Login Test</h1>
+    <button onclick="testLogin()">Test Login</button>
+    <div id="result"></div>
+    
+    <script>
+        async function testLogin() {
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = 'Teste Login...';
+            
+            try {
+                const formData = new FormData();
+                formData.append('username', 'ben');
+                formData.append('password', 'admin123');
+                
+                console.log('Sende Request...');
+                const response = await fetch('/api/auth/login', {
+                    method: 'POST',
+                    body: formData
+                });
+                
+                console.log('Status:', response.status);
+                const text = await response.text();
+                console.log('Response:', text);
+                
+                resultDiv.innerHTML = `
+                    <p>Status: ${response.status}</p>
+                    <p>Response: ${text}</p>
+                `;
+                
+                if (response.ok) {
+                    const data = JSON.parse(text);
+                    if (data.access_token) {
+                        localStorage.setItem('access_token', data.access_token);
+                        resultDiv.innerHTML += '<p style="color: green;">Token gespeichert! Weiterleitung...</p>';
+                        setTimeout(() => {
+                            window.location.href = '/index.html';
+                        }, 1000);
+                    }
+                }
+            } catch (error) {
+                console.error('Fehler:', error);
+                resultDiv.innerHTML = `<p style="color: red;">Fehler: ${error.message}</p>`;
+            }
+        }
+    </script>
+</body>
+</html>
