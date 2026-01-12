@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+
+# Datenbank
+*.db
+*.sqlite
+*.sqlite3
+
+# Umgebungsvariablen (WICHTIG: Enthält Stripe-Keys!)
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Uploads
+uploads/*
+!uploads/.gitkeep
+
+# Makler-Dokumente
+makler_dokumente/*
+!makler_dokumente/.gitkeep
+
+# Logs
+*.log
+logs/*.log
+
+# Backups
+backups/
+*.db.backup
+*.sqlite.backup
+
+# Produktions-Dateien
+.env
+.env.production
+.env.local
+
+
+
+
+
+
+
+

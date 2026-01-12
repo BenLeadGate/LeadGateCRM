@@ -1,0 +1,48 @@
+Kategorie,Wert
+Anbieter_Name,Immobilien Mustermann GmbH
+Postleitzahl,10115
+Ort,Berlin
+Grundstücksfläche,500
+Wohnfläche,120
+Preis,350000
+Telefonnummer,+49 30 12345678
+Features,Keller, Balkon, Garten
+Immobilientyp,Haus
+Baujahr,1995
+Lage,Ruhige Lage, zentrumsnah
+
+Anbieter_Name,Wohnungsgesellschaft Berlin
+Postleitzahl,20095
+Ort,Hamburg
+Grundstücksfläche,300
+Wohnfläche,85
+Preis,280000
+Telefonnummer,+49 40 98765432
+Features,Balkon
+Immobilientyp,Eigentumswohnung
+Baujahr,2010
+Lage,Zentrumsnah
+
+Anbieter_Name,Haus & Grund München
+Postleitzahl,80331
+Ort,München
+Grundstücksfläche,800
+Wohnfläche,180
+Preis,650000
+Telefonnummer,+49 89 55555555
+Features,Keller, Garten, Terrasse
+Immobilientyp,Haus
+Baujahr,1985
+Lage,Ruhig, am Stadtrand
+
+Anbieter_Name,Immobilien Schmidt
+Postleitzahl,40724
+Ort,Hilden
+Grundstücksfläche,100
+Wohnfläche,150
+Preis,1234
+Telefonnummer,12345
+Features,balknon
+Immobilientyp,haus
+Baujahr,1920
+Lage,neben dem wald

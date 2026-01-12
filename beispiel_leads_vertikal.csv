@@ -1,0 +1,28 @@
+Kategorie,Wert
+Anbieter_Name,Immobilien GmbH
+Postleitzahl,10115
+Ort,Berlin
+Grundstücksfläche,500
+Wohnfläche,120
+Telefonnummer,+49 30 12345678
+Features,"Keller, Balkon, Garten"
+
+Anbieter_Name,Haus & Grund
+Postleitzahl,20095
+Ort,Hamburg
+Grundstücksfläche,300
+Wohnfläche,80
+Telefonnummer,+49 40 98765432
+Features,Balkon
+
+Anbieter_Name,Wohnungsgesellschaft
+Postleitzahl,80331
+Ort,München
+Grundstücksfläche,200
+Wohnfläche,65
+Telefonnummer,+49 89 55555555
+Features,"Keller, Garten"
+
+
+
+
